@@ -1,0 +1,938 @@
+#include "app.h"
+
+#include "image/image_buffer.h"
+#include "ui/map_geometry.h"
+
+#include <imgui.h>
+#include <imgui_internal.h>
+#include <misc/cpp/imgui_stdlib.h>
+#include <tinyfiledialogs.h>
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <sstream>
+#include <string>
+#include <system_error>
+#include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <shellapi.h>
+#include <windows.h>
+#else
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+namespace chunkmap_desktop {
+
+namespace {
+
+constexpr const char* kDockspaceName = "ChunkMapDockspace";
+constexpr ImU32 kCanvas = IM_COL32(24, 27, 30, 255);
+constexpr ImU32 kGrid = IM_COL32(111, 122, 126, 150);
+constexpr ImU32 kSelection = IM_COL32(76, 159, 255, 255);
+constexpr ImU32 kEmpty = IM_COL32(17, 20, 22, 150);
+
+std::string next_desktop_request_id() {
+    static std::atomic<unsigned long long> sequence{0};
+    const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+    return "desktop-" + std::to_string(ticks) + "-" +
+           std::to_string(sequence.fetch_add(1));
+}
+
+ImTextureID texture_id(const GlTexture& texture) {
+    return static_cast<ImTextureID>(static_cast<std::intptr_t>(texture.id()));
+}
+
+std::string coord_label(chunkmap::ChunkCoord coord) {
+    return "(" + std::to_string(coord.x) + ", " + std::to_string(coord.y) + ")";
+}
+
+bool path_is_regular_file(const std::filesystem::path& path) {
+    std::error_code error;
+    return std::filesystem::is_regular_file(path, error) && !error;
+}
+
+void reveal_file(const std::filesystem::path& path) {
+#if defined(__APPLE__)
+    const pid_t process = fork();
+    if (process == 0) {
+        execlp("open", "open", "-R", path.string().c_str(), nullptr);
+        _exit(127);
+    }
+    if (process > 0) waitpid(process, nullptr, 0);
+#elif defined(_WIN32)
+    const std::wstring parameters = L"/select,\"" + path.wstring() + L"\"";
+    ShellExecuteW(nullptr, L"open", L"explorer.exe", parameters.c_str(), nullptr, SW_SHOWNORMAL);
+#else
+    const pid_t process = fork();
+    if (process == 0) {
+        execlp("xdg-open", "xdg-open", path.parent_path().string().c_str(), nullptr);
+        _exit(127);
+    }
+    if (process > 0) waitpid(process, nullptr, 0);
+#endif
+}
+
+}  // namespace
+
+App::App(std::filesystem::path workspace, std::optional<std::string> initial_project)
+    : workspace_(std::filesystem::absolute(std::move(workspace)).lexically_normal()) {
+    if (initial_project) open_project(workspace_, *initial_project);
+}
+
+App::~App() {
+    flush_prompt();
+    textures_.clear();
+}
+
+void App::draw() {
+    poll_commands();
+    draw_dockspace();
+    draw_toolbar();
+    draw_map();
+    draw_inspector();
+    draw_new_project_modal();
+    draw_project_settings_modal();
+    if (prompt_dirty_ && ImGui::GetTime() - prompt_last_edit_ >= 0.5) flush_prompt();
+}
+
+void App::draw_dockspace() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    constexpr ImGuiWindowFlags host_flags =
+        ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0F);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0F, 0.0F));
+    ImGui::Begin("##ChunkMapDockspaceHost", nullptr, host_flags);
+    ImGui::PopStyleVar(3);
+    const ImGuiID dockspace_id = ImGui::GetID(kDockspaceName);
+    ImGui::DockSpace(dockspace_id, ImVec2(0.0F, 0.0F));
+    if (!layout_initialized_) {
+        layout_initialized_ = true;
+        ImGui::DockBuilderRemoveNode(dockspace_id);
+        ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
+        ImGuiID body = dockspace_id;
+        ImGuiID toolbar = ImGui::DockBuilderSplitNode(
+            body, ImGuiDir_Up, 0.075F, nullptr, &body);
+        ImGuiID inspector = ImGui::DockBuilderSplitNode(
+            body, ImGuiDir_Right, 0.29F, nullptr, &body);
+        ImGui::DockBuilderDockWindow("Toolbar", toolbar);
+        ImGui::DockBuilderDockWindow("Map", body);
+        ImGui::DockBuilderDockWindow("Inspector", inspector);
+        ImGui::DockBuilderFinish(dockspace_id);
+    }
+    ImGui::End();
+}
+
+void App::draw_toolbar() {
+    ImGui::Begin("Toolbar", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar |
+                 ImGuiWindowFlags_NoScrollWithMouse);
+    if (ImGui::Button("Open Project")) open_project_dialog();
+    ImGui::SameLine();
+    if (ImGui::Button("New Project")) show_new_project_ = true;
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!project_);
+    if (ImGui::Button("Project Settings")) show_project_settings_ = true;
+    ImGui::SameLine();
+    if (ImGui::Button("Reload")) reload_project();
+    ImGui::SameLine();
+    if (ImGui::Button("Fit Map")) fit_requested_ = true;
+    ImGui::SameLine();
+    ImGui::Checkbox("Grid", &show_grid_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Coordinates", &show_coordinates_);
+    ImGui::SameLine();
+    ImGui::Checkbox("Seams", &show_seams_);
+    ImGui::EndDisabled();
+
+    if (project_) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s  |  %dx%d", project_->config.name.c_str(),
+                            project_->config.columns, project_->config.rows);
+    }
+    if (!error_message_.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.95F, 0.42F, 0.38F, 1.0F), "%s", error_message_.c_str());
+    } else if (!status_message_.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", status_message_.c_str());
+    }
+    ImGui::End();
+}
+
+void App::draw_map() {
+    ImGui::Begin("Map", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    if (!project_) {
+        const ImVec2 available = ImGui::GetContentRegionAvail();
+        ImGui::SetCursorPos(ImVec2(
+            std::max(18.0F, (available.x - 280.0F) * 0.5F),
+            std::max(18.0F, (available.y - 90.0F) * 0.42F)));
+        ImGui::TextUnformatted("Open a map project to begin review.");
+        if (ImGui::Button("Open Project", ImVec2(132.0F, 34.0F))) open_project_dialog();
+        ImGui::SameLine();
+        if (ImGui::Button("New Project", ImVec2(132.0F, 34.0F))) show_new_project_ = true;
+        ImGui::End();
+        return;
+    }
+
+    ImVec2 available = ImGui::GetContentRegionAvail();
+    available.x = std::max(available.x, 1.0F);
+    available.y = std::max(available.y, 1.0F);
+    last_canvas_size_ = available;
+    ImGui::InvisibleButton("##map_canvas", available,
+        ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    const ImVec2 origin = ImGui::GetItemRectMin();
+    const ImVec2 end = ImGui::GetItemRectMax();
+    const bool hovered = ImGui::IsItemHovered();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->PushClipRect(origin, end, true);
+    draw->AddRectFilled(origin, end, kCanvas);
+
+    int world_width = 0;
+    int world_height = 0;
+    int chunk_width = 0;
+    int chunk_height = 0;
+    int step_x = 0;
+    int step_y = 0;
+    bool detailed = project_->config.has_chunk_size();
+    if (detailed) {
+        auto geometry = chunkmap::map_geometry(project_->config);
+        if (!geometry) {
+            error_message_ = geometry.error().message;
+            draw->PopClipRect();
+            ImGui::End();
+            return;
+        }
+        world_width = geometry.value().world_width;
+        world_height = geometry.value().world_height;
+        chunk_width = geometry.value().chunk_width;
+        chunk_height = geometry.value().chunk_height;
+        step_x = geometry.value().step_x;
+        step_y = geometry.value().step_y;
+    } else {
+        GlTexture* concept = textures_.get(project_->paths.concept_source());
+        world_width = concept ? concept->width() : project_->config.columns * 256;
+        world_height = concept ? concept->height() : project_->config.rows * 256;
+        chunk_width = std::max(1, world_width / project_->config.columns);
+        chunk_height = std::max(1, world_height / project_->config.rows);
+        step_x = chunk_width;
+        step_y = chunk_height;
+    }
+
+    if (fit_requested_) {
+        fit_map(available);
+        fit_requested_ = false;
+    }
+    auto to_screen = [&](float x, float y) {
+        return ImVec2(origin.x + (x - pan_.x) * zoom_, origin.y + (y - pan_.y) * zoom_);
+    };
+
+    for (int y = 0; y < project_->config.rows; ++y) {
+        for (int x = 0; x < project_->config.columns; ++x) {
+            const chunkmap::ChunkCoord coord{x, y};
+            if (chunk_ready(coord)) continue;
+            const ImVec2 top_left = to_screen(static_cast<float>(x * step_x), static_cast<float>(y * step_y));
+            const ImVec2 bottom_right = to_screen(
+                static_cast<float>(x * step_x + chunk_width),
+                static_cast<float>(y * step_y + chunk_height));
+            if (GlTexture* region = textures_.get(project_->paths.concept_region(coord))) {
+                draw->AddImage(texture_id(*region), top_left, bottom_right,
+                               ImVec2(0, 0), ImVec2(1, 1), IM_COL32(160, 178, 167, 92));
+            } else {
+                draw->AddRectFilled(top_left, bottom_right, kEmpty);
+            }
+        }
+    }
+    if (detailed && composite_texture_supported_) {
+        if (GlTexture* composite = textures_.get(project_->paths.composite_png())) {
+            draw->AddImage(texture_id(*composite), to_screen(0, 0),
+                           to_screen(static_cast<float>(world_width), static_cast<float>(world_height)));
+        }
+    } else if (detailed) {
+        for (int y = 0; y < project_->config.rows; ++y) {
+            for (int x = 0; x < project_->config.columns; ++x) {
+                const chunkmap::ChunkCoord coord{x, y};
+                if (GlTexture* chunk = textures_.get(project_->paths.chunk_image(coord))) {
+                    draw->AddImage(texture_id(*chunk),
+                        to_screen(static_cast<float>(x * step_x), static_cast<float>(y * step_y)),
+                        to_screen(static_cast<float>(x * step_x + chunk_width),
+                                  static_cast<float>(y * step_y + chunk_height)));
+                }
+            }
+        }
+    } else if (GlTexture* concept = textures_.get(project_->paths.concept_source())) {
+        draw->AddImage(texture_id(*concept), to_screen(0, 0),
+                       to_screen(static_cast<float>(world_width), static_cast<float>(world_height)),
+                       ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, 135));
+    }
+
+    for (int y = 0; y < project_->config.rows; ++y) {
+        for (int x = 0; x < project_->config.columns; ++x) {
+            const chunkmap::ChunkCoord coord{x, y};
+            const ImVec2 top_left = to_screen(static_cast<float>(x * step_x), static_cast<float>(y * step_y));
+            const ImVec2 bottom_right = to_screen(
+                static_cast<float>(x * step_x + chunk_width),
+                static_cast<float>(y * step_y + chunk_height));
+            if (show_grid_) draw->AddRect(top_left, bottom_right, kGrid, 0.0F, 0, 1.0F);
+            if (show_coordinates_ && zoom_ > 0.18F) {
+                const std::string label = coord_label(coord);
+                draw->AddRectFilled(top_left, ImVec2(top_left.x + 55.0F, top_left.y + 22.0F),
+                                    IM_COL32(10, 12, 14, 190));
+                draw->AddText(ImVec2(top_left.x + 7.0F, top_left.y + 4.0F),
+                              IM_COL32(225, 230, 230, 255), label.c_str());
+            }
+        }
+    }
+    if (show_seams_ && detailed) {
+        for (int x = 1; x < project_->config.columns; ++x) {
+            const float screen_x = to_screen(static_cast<float>(x * step_x), 0).x;
+            draw->AddLine(ImVec2(screen_x, to_screen(0, 0).y),
+                          ImVec2(screen_x, to_screen(0, static_cast<float>(world_height)).y),
+                          IM_COL32(239, 180, 70, 130), 1.0F);
+        }
+        for (int y = 1; y < project_->config.rows; ++y) {
+            const float screen_y = to_screen(0, static_cast<float>(y * step_y)).y;
+            draw->AddLine(ImVec2(to_screen(0, 0).x, screen_y),
+                          ImVec2(to_screen(static_cast<float>(world_width), 0).x, screen_y),
+                          IM_COL32(239, 180, 70, 130), 1.0F);
+        }
+    }
+    if (selected_) {
+        const ImVec2 top_left = to_screen(
+            static_cast<float>(selected_->x * step_x), static_cast<float>(selected_->y * step_y));
+        const ImVec2 bottom_right = to_screen(
+            static_cast<float>(selected_->x * step_x + chunk_width),
+            static_cast<float>(selected_->y * step_y + chunk_height));
+        draw->AddRect(top_left, bottom_right, kSelection, 0.0F, 0, 3.0F);
+    }
+    draw->PopClipRect();
+
+    if (hovered && ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0.0F)) {
+        const ImVec2 delta = ImGui::GetIO().MouseDelta;
+        pan_.x -= delta.x / zoom_;
+        pan_.y -= delta.y / zoom_;
+    }
+    if (hovered && ImGui::GetIO().MouseWheel != 0.0F) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const ImVec2 world_before(
+            pan_.x + (mouse.x - origin.x) / zoom_,
+            pan_.y + (mouse.y - origin.y) / zoom_);
+        zoom_ = std::clamp(
+            zoom_ * std::pow(1.18F, ImGui::GetIO().MouseWheel), 0.04F, 16.0F);
+        pan_.x = world_before.x - (mouse.x - origin.x) / zoom_;
+        pan_.y = world_before.y - (mouse.y - origin.y) / zoom_;
+    }
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const double world_x = pan_.x + (mouse.x - origin.x) / zoom_;
+        const double world_y = pan_.y + (mouse.y - origin.y) / zoom_;
+        std::optional<chunkmap::ChunkCoord> hit;
+        if (detailed) {
+            hit = chunkmap::topmost_chunk_at(project_->config, world_x, world_y);
+        } else if (world_x >= 0 && world_y >= 0 && world_x < world_width && world_y < world_height) {
+            hit = chunkmap::ChunkCoord{
+                std::min(project_->config.columns - 1, static_cast<int>(world_x / step_x)),
+                std::min(project_->config.rows - 1, static_cast<int>(world_y / step_y))};
+        }
+        if (hit) {
+            select_chunk(*hit);
+            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) focus_selected(available);
+        }
+    }
+    if (hovered && ImGui::IsKeyPressed(ImGuiKey_F)) focus_selected(available);
+    if (hovered && ImGui::IsKeyPressed(ImGuiKey_Home)) fit_requested_ = true;
+    ImGui::End();
+}
+
+void App::draw_inspector() {
+    ImGui::Begin("Inspector");
+    if (!project_) {
+        ImGui::TextDisabled("No project open");
+        ImGui::End();
+        return;
+    }
+    if (!selected_) {
+        ImGui::TextDisabled("Select a chunk on the map");
+        ImGui::End();
+        return;
+    }
+    ImGui::Text("Chunk %s", coord_label(*selected_).c_str());
+    ImGui::Separator();
+    if (ImGui::BeginTabBar("##inspector_tabs")) {
+        if (ImGui::BeginTabItem("Chunk")) {
+            draw_chunk_tab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Prompt")) {
+            draw_prompt_tab();
+            ImGui::EndTabItem();
+        }
+        const bool seam_available = chunk_ready(*selected_) && ready_neighbor_count(*selected_) > 0;
+        ImGui::BeginDisabled(!seam_available);
+        if (ImGui::BeginTabItem("Seam")) {
+            draw_seam_tab();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndDisabled();
+        ImGui::EndTabBar();
+    }
+    ImGui::End();
+}
+
+void App::draw_chunk_tab() {
+    const bool ready = chunk_ready(*selected_);
+    ImGui::TextDisabled("STATUS");
+    ImGui::SameLine();
+    ImGui::TextColored(ready ? ImVec4(0.40F, 0.78F, 0.52F, 1.0F)
+                             : ImVec4(0.68F, 0.71F, 0.72F, 1.0F),
+                       "%s", ready ? "Ready" : "Empty");
+    if (project_->config.has_chunk_size()) {
+        ImGui::Text("Image size  %d x %d", *project_->config.chunk_width, *project_->config.chunk_height);
+    } else {
+        ImGui::TextDisabled("Image size  Waiting for imported image");
+    }
+    ImGui::Spacing();
+    ImGui::TextDisabled("READY NEIGHBORS");
+    ImGui::TextWrapped("%s", ready_neighbor_text(*selected_).c_str());
+    if (!ready && ready_neighbor_count(*selected_) > 0) {
+        ImGui::TextDisabled("Generation context has %d Ready neighbor%s.",
+            ready_neighbor_count(*selected_), ready_neighbor_count(*selected_) == 1 ? "" : "s");
+    }
+    ImGui::Spacing();
+    const auto preview_path = ready ? project_->paths.chunk_image(*selected_)
+                                    : project_->paths.concept_region(*selected_);
+    if (GlTexture* preview = textures_.get(preview_path)) {
+        const float width = std::max(1.0F, ImGui::GetContentRegionAvail().x);
+        const float height = std::min(260.0F, width * preview->height() / preview->width());
+        ImGui::Image(texture_id(*preview), ImVec2(width, height));
+    }
+    ImGui::Spacing();
+    if (ImGui::Button(ready ? "Replace Image" : "Import Image")) import_image();
+    ImGui::SameLine();
+    if (ready) {
+        if (ImGui::Button("Reveal Image File")) {
+            reveal_file(project_->paths.chunk_image(*selected_));
+        }
+    }
+    const bool can_generate = project_->config.has_chunk_size() &&
+                              ready_neighbor_count(*selected_) > 0;
+    ImGui::Separator();
+    ImGui::BeginDisabled(!can_generate);
+    if (ImGui::Button("Export Context")) export_generation_context();
+    ImGui::EndDisabled();
+    if (ImGui::Button("Copy Coordinate")) {
+        ImGui::SetClipboardText((std::to_string(selected_->x) + "," +
+                                 std::to_string(selected_->y)).c_str());
+    }
+    ImGui::TextWrapped("%s", preview_path.string().c_str());
+}
+
+void App::draw_prompt_tab() {
+    const ImVec2 size(-1.0F, std::max(160.0F, ImGui::GetContentRegionAvail().y));
+    if (ImGui::InputTextMultiline("##prompt_editor", &prompt_buffer_, size,
+                                  ImGuiInputTextFlags_AllowTabInput)) {
+        prompt_dirty_ = true;
+        prompt_last_edit_ = ImGui::GetTime();
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) flush_prompt();
+}
+
+void App::draw_seam_tab() {
+    const char* directions[] = {"Top", "Right", "Bottom", "Left"};
+    bool available[4] = {
+        selected_->y > 0 && chunk_ready({selected_->x, selected_->y - 1}),
+        selected_->x + 1 < project_->config.columns && chunk_ready({selected_->x + 1, selected_->y}),
+        selected_->y + 1 < project_->config.rows && chunk_ready({selected_->x, selected_->y + 1}),
+        selected_->x > 0 && chunk_ready({selected_->x - 1, selected_->y})};
+    if (!available[seam_direction_]) {
+        for (int index = 0; index < 4; ++index) {
+            if (available[index]) {
+                seam_direction_ = index;
+                seam_analysis_.reset();
+                break;
+            }
+        }
+    }
+    ImGui::SetNextItemWidth(-1.0F);
+    if (ImGui::BeginCombo("##seam_direction", directions[seam_direction_])) {
+        for (int index = 0; index < 4; ++index) {
+            if (!available[index]) continue;
+            if (ImGui::Selectable(directions[index], seam_direction_ == index)) {
+                seam_direction_ = index;
+                seam_analysis_.reset();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    const char* modes[] = {"Composite", "Raw", "Difference", "Overlap"};
+    for (int index = 0; index < 4; ++index) {
+        if (index > 0) ImGui::SameLine();
+        ImGui::RadioButton(modes[index], &seam_mode_, index);
+    }
+    if (!seam_analysis_) refresh_seam();
+    if (!seam_analysis_) {
+        ImGui::TextColored(ImVec4(0.95F, 0.42F, 0.38F, 1.0F), "%s", error_message_.c_str());
+        return;
+    }
+    ImGui::Separator();
+    ImGui::Text("Overlap  %d px", seam_analysis_->overlap_pixels);
+    ImGui::Text("Feather  %d px", seam_analysis_->feather_pixels);
+    ImGui::Text("Mean RGB difference  %.2f", seam_analysis_->mean_absolute_rgb_difference);
+    ImGui::Spacing();
+
+    const float width = std::max(1.0F, ImGui::GetContentRegionAvail().x);
+    if (seam_mode_ == 0) {
+        if (GlTexture* texture = textures_.get(project_->paths.composite_png())) {
+            ImGui::Image(texture_id(*texture), ImVec2(width, width * texture->height() / texture->width()));
+        }
+    } else if (seam_mode_ == 1) {
+        GlTexture* first = textures_.get(project_->paths.chunk_image(seam_first_));
+        GlTexture* second = textures_.get(project_->paths.chunk_image(seam_second_));
+        if (first && second) {
+            const float half = (width - ImGui::GetStyle().ItemSpacing.x) * 0.5F;
+            ImGui::Image(texture_id(*first), ImVec2(half, half * first->height() / first->width()));
+            ImGui::SameLine();
+            ImGui::Image(texture_id(*second), ImVec2(half, half * second->height() / second->width()));
+        }
+    } else {
+        const std::string direction = seam_core_direction_ == chunkmap::SeamDirection::Right
+            ? "right" : "bottom";
+        const auto directory = project_->paths.seam_dir(seam_first_, direction);
+        const auto path = directory / (seam_mode_ == 2 ? "difference.png" : "overlap.png");
+        if (GlTexture* texture = textures_.get(path)) {
+            ImGui::Image(texture_id(*texture), ImVec2(width, width * texture->height() / texture->width()));
+        }
+    }
+}
+
+void App::draw_new_project_modal() {
+    if (show_new_project_) ImGui::OpenPopup("New Project");
+    bool open = show_new_project_;
+    if (!ImGui::BeginPopupModal("New Project", &open, ImGuiWindowFlags_AlwaysAutoResize)) {
+        show_new_project_ = open;
+        return;
+    }
+    show_new_project_ = true;
+    ImGui::SetNextItemWidth(360.0F);
+    ImGui::InputText("Name", &new_project_name_);
+    ImGui::SetNextItemWidth(300.0F);
+    ImGui::InputText("Concept Map", &new_concept_path_);
+    ImGui::SameLine();
+    if (ImGui::Button("Browse")) {
+        const char* path = tinyfd_openFileDialog(
+            "Choose Concept Map", "", 0, nullptr, nullptr, 0);
+        if (path) new_concept_path_ = path;
+    }
+    ImGui::InputInt("Columns", &new_columns_);
+    ImGui::InputInt("Rows", &new_rows_);
+    ImGui::SliderFloat("Horizontal overlap", &new_overlap_x_, 0.01F, 0.49F, "%.2f");
+    ImGui::SliderFloat("Vertical overlap", &new_overlap_y_, 0.01F, 0.49F, "%.2f");
+    ImGui::SliderFloat("Feather", &new_feather_, 0.0F, 0.20F, "%.2f");
+    ImGui::Separator();
+    const bool valid = !new_project_name_.empty() && !new_concept_path_.empty() &&
+                       new_columns_ > 0 && new_rows_ > 0;
+    ImGui::BeginDisabled(!valid);
+    if (ImGui::Button("Create Project", ImVec2(150.0F, 0.0F))) {
+        auto request = make_request(chunkmap::CommandType::ProjectCreate);
+        request.project_name = new_project_name_;
+        request.payload = chunkmap::ProjectCreatePayload{
+            new_project_name_, std::filesystem::absolute(new_concept_path_).lexically_normal(),
+            new_columns_, new_rows_, new_overlap_x_, new_overlap_y_, new_feather_};
+        auto created = command_host_.submit_and_wait(std::move(request));
+        if (created && created.value().project_snapshot) {
+            apply_project_snapshot(*created.value().project_snapshot, true);
+            show_new_project_ = false;
+            ImGui::CloseCurrentPopup();
+        } else {
+            error_message_ = created ? "Project command returned no project."
+                                     : created.error().message;
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+        show_new_project_ = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+    show_new_project_ = open && show_new_project_;
+}
+
+void App::draw_project_settings_modal() {
+    if (show_project_settings_) ImGui::OpenPopup("Project Settings");
+    bool open = show_project_settings_;
+    if (!ImGui::BeginPopupModal("Project Settings", &open, ImGuiWindowFlags_AlwaysAutoResize)) {
+        show_project_settings_ = open;
+        return;
+    }
+    if (project_) {
+        ImGui::Text("Project  %s", project_->config.name.c_str());
+        ImGui::Text("Workspace  %s", workspace_.string().c_str());
+        ImGui::Text("Grid  %d x %d", project_->config.columns, project_->config.rows);
+        ImGui::Text("Overlap  %.2f x %.2f", project_->config.horizontal_overlap_ratio,
+                    project_->config.vertical_overlap_ratio);
+        ImGui::Text("Feather  %.2f", project_->config.feather_ratio);
+        if (project_->config.has_chunk_size()) {
+            auto geometry = chunkmap::map_geometry(project_->config);
+            ImGui::Text("Chunk  %d x %d", *project_->config.chunk_width, *project_->config.chunk_height);
+            if (geometry) ImGui::Text("Composite  %d x %d", geometry.value().world_width,
+                                      geometry.value().world_height);
+            ImGui::Text("GPU texture limit  %d px", maximum_texture_size_);
+            if (!composite_texture_supported_) {
+                ImGui::TextColored(ImVec4(0.94F, 0.71F, 0.28F, 1.0F),
+                    "Composite exceeds the GPU limit; drawing individual chunks.");
+            }
+        } else {
+            ImGui::TextDisabled("Chunk size  Waiting for imported image");
+        }
+    }
+    ImGui::Separator();
+    if (ImGui::Button("Close")) {
+        show_project_settings_ = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+    show_project_settings_ = open && show_project_settings_;
+}
+
+void App::open_project_dialog() {
+    const char* patterns[] = {"*.json"};
+    const char* path = tinyfd_openFileDialog(
+        "Open Chunk Map Project", workspace_.string().c_str(), 1, patterns, "Chunk Map Project", 0);
+    if (!path) return;
+    const std::filesystem::path project_json(path);
+    if (project_json.filename() != "project.json" || project_json.parent_path().parent_path().filename() != "output") {
+        error_message_ = "Choose output/<project-name>/project.json.";
+        return;
+    }
+    open_project(project_json.parent_path().parent_path().parent_path(),
+                 project_json.parent_path().filename().string());
+}
+
+void App::open_project(const std::filesystem::path& workspace, const std::string& name) {
+    flush_prompt();
+    auto request = make_request(chunkmap::CommandType::ProjectOpen);
+    request.workspace = std::filesystem::absolute(workspace).lexically_normal();
+    request.project_name = name;
+    auto loaded = command_host_.submit_and_wait(std::move(request));
+    if (!loaded || !loaded.value().project_snapshot) {
+        error_message_ = loaded ? "Open command returned no project." : loaded.error().message;
+        return;
+    }
+    workspace_ = std::filesystem::absolute(workspace).lexically_normal();
+    apply_project_snapshot(*loaded.value().project_snapshot, true);
+}
+
+void App::apply_project_snapshot(chunkmap::Project project, bool reset_selection) {
+    const auto previous_selection = reset_selection ? std::optional<chunkmap::ChunkCoord>{} : selected_;
+    workspace_ = project.paths.root().parent_path().parent_path();
+    project_ = std::move(project);
+    selected_.reset();
+    prompt_buffer_.clear();
+    prompt_dirty_ = false;
+    seam_analysis_.reset();
+    textures_.clear();
+    fit_requested_ = true;
+    maximum_texture_size_ = maximum_texture_size();
+    composite_texture_supported_ = true;
+    if (project_->config.has_chunk_size()) {
+        auto fits = chunkmap::map_fits_texture(project_->config, maximum_texture_size_);
+        composite_texture_supported_ = fits && fits.value();
+    }
+    status_message_ = composite_texture_supported_
+        ? "Project opened"
+        : "Composite exceeds GPU texture limit; drawing chunks separately";
+    error_message_.clear();
+    if (previous_selection && project_->config.contains(*previous_selection)) {
+        select_chunk(*previous_selection);
+    }
+}
+
+void App::reload_project() {
+    if (!project_) return;
+    const std::string name = project_->config.name;
+    flush_prompt();
+    auto request = make_request(chunkmap::CommandType::ProjectOpen);
+    request.project_name = name;
+    auto loaded = command_host_.submit_and_wait(std::move(request));
+    if (!loaded || !loaded.value().project_snapshot) {
+        error_message_ = loaded ? "Reload command returned no project." : loaded.error().message;
+        return;
+    }
+    apply_project_snapshot(*loaded.value().project_snapshot, false);
+    status_message_ = composite_texture_supported_
+        ? "Reloaded"
+        : "Composite exceeds GPU texture limit; drawing chunks separately";
+    error_message_.clear();
+}
+
+void App::select_chunk(chunkmap::ChunkCoord coord) {
+    if (!project_ || !project_->config.contains(coord) || selected_ == coord) return;
+    flush_prompt();
+    selected_ = coord;
+    auto request = make_request(chunkmap::CommandType::PromptShow);
+    request.payload = chunkmap::CoordPayload{coord};
+    auto prompt = command_host_.submit_and_wait(std::move(request));
+    prompt_buffer_ = prompt ? prompt.value().data.value("prompt", std::string{}) : std::string{};
+    prompt_dirty_ = false;
+    seam_analysis_.reset();
+    if (!prompt) error_message_ = prompt.error().message;
+}
+
+void App::flush_prompt() {
+    if (!project_ || !selected_ || !prompt_dirty_) return;
+    auto request = make_request(chunkmap::CommandType::PromptSet);
+    request.payload = chunkmap::PromptSetPayload{*selected_, prompt_buffer_};
+    auto written = command_host_.submit_and_wait(std::move(request));
+    if (written) {
+        prompt_dirty_ = false;
+        status_message_ = "Prompt updated";
+        error_message_.clear();
+    } else {
+        error_message_ = written.error().message;
+    }
+}
+
+void App::fit_map(const ImVec2& available) {
+    if (!project_) return;
+    int width = project_->config.columns * 256;
+    int height = project_->config.rows * 256;
+    if (project_->config.has_chunk_size()) {
+        auto geometry = chunkmap::map_geometry(project_->config);
+        if (geometry) {
+            width = geometry.value().world_width;
+            height = geometry.value().world_height;
+        }
+    } else if (GlTexture* concept = textures_.get(project_->paths.concept_source())) {
+        width = concept->width();
+        height = concept->height();
+    }
+    constexpr float margin = 28.0F;
+    zoom_ = std::clamp(std::min(
+        (available.x - margin * 2.0F) / std::max(1, width),
+        (available.y - margin * 2.0F) / std::max(1, height)), 0.04F, 16.0F);
+    pan_.x = -std::max(0.0F, (available.x / zoom_ - width) * 0.5F);
+    pan_.y = -std::max(0.0F, (available.y / zoom_ - height) * 0.5F);
+}
+
+void App::focus_selected(const ImVec2& available) {
+    if (!project_ || !selected_) return;
+    int chunk_width = 256;
+    int chunk_height = 256;
+    int step_x = 256;
+    int step_y = 256;
+    if (project_->config.has_chunk_size()) {
+        auto geometry = chunkmap::map_geometry(project_->config);
+        if (geometry) {
+            chunk_width = geometry.value().chunk_width;
+            chunk_height = geometry.value().chunk_height;
+            step_x = geometry.value().step_x;
+            step_y = geometry.value().step_y;
+        }
+    } else if (GlTexture* concept = textures_.get(project_->paths.concept_source())) {
+        chunk_width = concept->width() / project_->config.columns;
+        chunk_height = concept->height() / project_->config.rows;
+        step_x = chunk_width;
+        step_y = chunk_height;
+    }
+    zoom_ = std::clamp(std::min(available.x / (chunk_width * 1.25F),
+                                available.y / (chunk_height * 1.25F)), 0.04F, 16.0F);
+    pan_.x = selected_->x * step_x + chunk_width * 0.5F - available.x / (2.0F * zoom_);
+    pan_.y = selected_->y * step_y + chunk_height * 0.5F - available.y / (2.0F * zoom_);
+}
+
+void App::import_image() {
+    if (!project_ || !selected_) return;
+    const char* path = tinyfd_openFileDialog("Import Chunk Image", "", 0, nullptr, nullptr, 0);
+    if (!path) return;
+    auto image = chunkmap::ImageBuffer::load(path);
+    if (!image) {
+        error_message_ = image.error().message;
+        return;
+    }
+    if (!project_->config.has_chunk_size()) {
+        const std::string message = "Use " + std::to_string(image.value().width()) + " x " +
+            std::to_string(image.value().height()) + " as the chunk size for this project?";
+        if (tinyfd_messageBox("Import Chunk Image", message.c_str(),
+                              "yesno", "question", 1) != 1) return;
+    }
+    auto request = make_request(chunkmap::CommandType::ChunkImport);
+    request.payload = chunkmap::ChunkImagePayload{
+        *selected_, std::filesystem::absolute(path).lexically_normal()};
+    auto imported = command_host_.submit_and_wait(std::move(request));
+    if (!imported) {
+        error_message_ = imported.error().message;
+        return;
+    }
+    if (imported.value().project_snapshot) {
+        apply_project_snapshot(*imported.value().project_snapshot, false);
+        fit_requested_ = true;
+    } else {
+        textures_.invalidate(project_->paths.chunk_image(*selected_));
+        textures_.invalidate(project_->paths.composite_png());
+        seam_analysis_.reset();
+    }
+    status_message_ = "Chunk image imported";
+    error_message_.clear();
+}
+
+void App::export_generation_context() {
+    if (!project_ || !selected_ || ready_neighbor_count(*selected_) == 0) return;
+    flush_prompt();
+    if (prompt_dirty_) return;
+    auto request = make_request(chunkmap::CommandType::ChunkContext);
+    request.payload = chunkmap::CoordPayload{*selected_};
+    auto exported = command_host_.submit_and_wait(std::move(request));
+    if (!exported) {
+        error_message_ = exported.error().message;
+        return;
+    }
+    const auto manifest = exported.value().data.value("manifest", std::string{});
+    if (manifest.empty()) {
+        error_message_ = "Context command returned no manifest.";
+        return;
+    }
+    reveal_file(manifest);
+    status_message_ = "Generation context exported";
+    error_message_.clear();
+}
+
+void App::refresh_seam() {
+    if (!project_ || !selected_) return;
+    seam_first_ = *selected_;
+    seam_second_ = *selected_;
+    if (seam_direction_ == 0) {
+        seam_first_.y -= 1;
+        seam_core_direction_ = chunkmap::SeamDirection::Bottom;
+    } else if (seam_direction_ == 1) {
+        seam_second_.x += 1;
+        seam_core_direction_ = chunkmap::SeamDirection::Right;
+    } else if (seam_direction_ == 2) {
+        seam_second_.y += 1;
+        seam_core_direction_ = chunkmap::SeamDirection::Bottom;
+    } else {
+        seam_first_.x -= 1;
+        seam_core_direction_ = chunkmap::SeamDirection::Right;
+    }
+    if (seam_direction_ == 0 || seam_direction_ == 3) seam_second_ = *selected_;
+    auto request = make_request(chunkmap::CommandType::SeamInspect);
+    request.payload = chunkmap::SeamInspectPayload{
+        seam_first_, seam_core_direction_ == chunkmap::SeamDirection::Right
+            ? chunkmap::CommandSeamDirection::Right
+            : chunkmap::CommandSeamDirection::Bottom};
+    auto result = command_host_.submit_and_wait(std::move(request));
+    if (result && result.value().seam_analysis) {
+        seam_analysis_ = *result.value().seam_analysis;
+        error_message_.clear();
+    } else {
+        seam_analysis_.reset();
+        error_message_ = result ? "Seam command returned no analysis." : result.error().message;
+    }
+}
+
+chunkmap::CommandRequest App::make_request(chunkmap::CommandType type) const {
+    chunkmap::CommandRequest request;
+    request.request_id = next_desktop_request_id();
+    request.type = type;
+    request.workspace = workspace_;
+    if (project_) request.project_name = project_->config.name;
+    return request;
+}
+
+void App::poll_commands() {
+    for (auto& completion : command_host_.take_completions()) {
+        if (completion.request.request_id.rfind("desktop-", 0) == 0) continue;
+        if (!completion.result) {
+            error_message_ = completion.result.error().message;
+            continue;
+        }
+        auto& result = completion.result.value();
+        if (completion.request.type == chunkmap::CommandType::ProjectCreate &&
+            result.project_snapshot) {
+            apply_project_snapshot(*result.project_snapshot, true);
+            status_message_ = "CLI project created";
+            continue;
+        }
+        if (!project_ || !result.changes.project ||
+            !(result.changes.project.value() ==
+              chunkmap::make_project_key(workspace_, project_->config.name))) {
+            continue;
+        }
+        if (result.project_snapshot && result.changes.project_changed) {
+            apply_project_snapshot(*result.project_snapshot, false);
+        }
+        for (const auto coord : result.changes.changed_chunks) {
+            textures_.invalidate(project_->paths.chunk_image(coord));
+        }
+        if (result.changes.composite_changed) {
+            textures_.invalidate(project_->paths.composite_png());
+        }
+        if (!result.changes.changed_chunks.empty() ||
+            !result.changes.changed_seams.empty()) {
+            seam_analysis_.reset();
+        }
+        if (selected_ && std::find(result.changes.changed_prompts.begin(),
+                                   result.changes.changed_prompts.end(), *selected_) !=
+                             result.changes.changed_prompts.end()) {
+            auto request = make_request(chunkmap::CommandType::PromptShow);
+            request.payload = chunkmap::CoordPayload{*selected_};
+            auto prompt = command_host_.submit_and_wait(std::move(request));
+            if (prompt) {
+                prompt_buffer_ = prompt.value().data.value("prompt", std::string{});
+                prompt_dirty_ = false;
+            }
+        }
+        status_message_ = "CLI command applied";
+        error_message_.clear();
+    }
+}
+
+bool App::chunk_ready(chunkmap::ChunkCoord coord) const {
+    return project_ && project_->config.contains(coord) &&
+           path_is_regular_file(project_->paths.chunk_image(coord));
+}
+
+int App::ready_neighbor_count(chunkmap::ChunkCoord coord) const {
+    int result = 0;
+    for (const auto neighbor : {chunkmap::ChunkCoord{coord.x, coord.y - 1},
+                                chunkmap::ChunkCoord{coord.x + 1, coord.y},
+                                chunkmap::ChunkCoord{coord.x, coord.y + 1},
+                                chunkmap::ChunkCoord{coord.x - 1, coord.y}}) {
+        if (chunk_ready(neighbor)) ++result;
+    }
+    return result;
+}
+
+std::string App::ready_neighbor_text(chunkmap::ChunkCoord coord) const {
+    std::vector<std::string> names;
+    if (chunk_ready({coord.x, coord.y - 1})) names.emplace_back("top");
+    if (chunk_ready({coord.x + 1, coord.y})) names.emplace_back("right");
+    if (chunk_ready({coord.x, coord.y + 1})) names.emplace_back("bottom");
+    if (chunk_ready({coord.x - 1, coord.y})) names.emplace_back("left");
+    if (names.empty()) return "None";
+    std::ostringstream result;
+    for (std::size_t index = 0; index < names.size(); ++index) {
+        if (index > 0) result << ", ";
+        result << names[index];
+    }
+    return result.str();
+}
+
+}  // namespace chunkmap_desktop

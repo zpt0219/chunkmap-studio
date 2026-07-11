@@ -1,0 +1,6 @@
+/build/
+/build-*/
+/third_party/
+/output/
+/imgui.ini
+.DS_Store

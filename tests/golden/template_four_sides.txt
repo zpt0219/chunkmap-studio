@@ -1,0 +1,5 @@
+# 4x4, overlap=1. Paste order: top, bottom, left, right.
+BRRY
+B..Y
+B..Y
+BGGY

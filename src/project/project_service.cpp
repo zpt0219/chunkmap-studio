@@ -1,0 +1,672 @@
+#include "project/project_service.h"
+
+#include "image/image_buffer.h"
+#include "image/composite_builder.h"
+#include "image/image_pipeline.h"
+#include "image/image_registration.h"
+#include "io/atomic_file.h"
+
+#include <nlohmann/json.hpp>
+
+#include <cmath>
+#include <cstdint>
+#include <exception>
+#include <set>
+#include <system_error>
+#include <utility>
+
+namespace chunkmap {
+
+namespace {
+
+using nlohmann::json;
+
+bool valid_ratio(double value) {
+    return std::isfinite(value) && value > 0.0 && value < 1.0;
+}
+
+bool valid_feather(double value) {
+    return std::isfinite(value) && value >= 0.0 && value < 1.0;
+}
+
+bool path_is_regular_file(const std::filesystem::path& path) {
+    std::error_code error;
+    return std::filesystem::is_regular_file(path, error) && !error;
+}
+
+Result<void> ensure_directory(const std::filesystem::path& path) {
+    std::error_code error;
+    std::filesystem::create_directories(path, error);
+    if (error) {
+        return Result<void>::failure(
+            "create_directory_failed", "Unable to create directory: " + path.string());
+    }
+    return Result<void>::success();
+}
+
+std::string prompt_text(const json& item) {
+    if (item.contains("prompt") && item["prompt"].is_string()) {
+        return item["prompt"].get<std::string>();
+    }
+    return {};
+}
+
+Result<NeighborImages> load_neighbors(const Project& project, ChunkCoord coord) {
+    NeighborImages result;
+    auto load = [&](ChunkCoord neighbor, std::optional<ImageBuffer>& destination) -> Result<void> {
+        if (!project.config.contains(neighbor) ||
+            !path_is_regular_file(project.paths.chunk_image(neighbor))) {
+            return Result<void>::success();
+        }
+        auto image = ImageBuffer::load(project.paths.chunk_image(neighbor));
+        if (!image) return Result<void>::failure(image.error().code, image.error().message);
+        destination = image.take_value();
+        return Result<void>::success();
+    };
+    for (const auto& entry : std::vector<std::pair<ChunkCoord, std::optional<ImageBuffer>*>>{
+             {{coord.x, coord.y - 1}, &result.top},
+             {{coord.x, coord.y + 1}, &result.bottom},
+             {{coord.x - 1, coord.y}, &result.left},
+             {{coord.x + 1, coord.y}, &result.right}}) {
+        auto loaded = load(entry.first, *entry.second);
+        if (!loaded) return Result<NeighborImages>::failure(loaded.error().code, loaded.error().message);
+    }
+    return Result<NeighborImages>::success(std::move(result));
+}
+
+}  // namespace
+
+ProjectService::ProjectService(std::filesystem::path workspace_root)
+    : repository_(std::move(workspace_root)) {}
+
+Result<void> ProjectService::validate_config(const ProjectConfig& config) const {
+    if (!is_valid_project_name(config.name)) {
+        return Result<void>::failure("invalid_project_name", "Invalid project name: " + config.name);
+    }
+    if (config.schema_version != 1) {
+        return Result<void>::failure("unsupported_schema", "Only project schema version 1 is supported.");
+    }
+    if (config.columns <= 0 || config.rows <= 0) {
+        return Result<void>::failure("invalid_grid", "Columns and rows must be positive.");
+    }
+    constexpr std::int64_t kMaximumChunkCount = 1'000'000;
+    const auto chunk_count = static_cast<std::int64_t>(config.columns) * config.rows;
+    if (chunk_count > kMaximumChunkCount) {
+        return Result<void>::failure(
+            "grid_too_large", "Project grid cannot contain more than 1000000 chunks.");
+    }
+    if (!valid_ratio(config.horizontal_overlap_ratio) ||
+        !valid_ratio(config.vertical_overlap_ratio)) {
+        return Result<void>::failure("invalid_overlap_ratio", "Overlap ratios must be between 0 and 1.");
+    }
+    if (!valid_feather(config.feather_ratio)) {
+        return Result<void>::failure("invalid_feather_ratio", "Feather ratio must be at least 0 and below 1.");
+    }
+    if (config.chunk_width.has_value() != config.chunk_height.has_value()) {
+        return Result<void>::failure("invalid_chunk_size", "Chunk width and height must both be set or null.");
+    }
+    if (config.has_chunk_size() && (*config.chunk_width <= 0 || *config.chunk_height <= 0)) {
+        return Result<void>::failure("invalid_chunk_size", "Chunk dimensions must be positive.");
+    }
+    return Result<void>::success();
+}
+
+Result<void> ProjectService::validate_coord(const Project& project, ChunkCoord coord) const {
+    if (!project.config.contains(coord)) {
+        return Result<void>::failure(
+            "chunk_out_of_range",
+            "Chunk coordinate is outside the project grid: " +
+                std::to_string(coord.x) + "," + std::to_string(coord.y));
+    }
+    return Result<void>::success();
+}
+
+Result<Project> ProjectService::create_project(const CreateProjectRequest& request) {
+    ProjectConfig config;
+    config.name = request.name;
+    config.columns = request.columns;
+    config.rows = request.rows;
+    config.horizontal_overlap_ratio = request.horizontal_overlap_ratio;
+    config.vertical_overlap_ratio = request.vertical_overlap_ratio;
+    config.feather_ratio = request.feather_ratio;
+
+    auto config_result = validate_config(config);
+    if (!config_result) {
+        return Result<Project>::failure(config_result.error().code, config_result.error().message);
+    }
+
+    auto concept = ImageBuffer::load(request.concept_image);
+    if (!concept) return Result<Project>::failure(concept.error().code, concept.error().message);
+
+    ProjectPaths paths(repository_.workspace_paths().root(), request.name);
+    std::error_code error;
+    if (std::filesystem::exists(paths.root(), error)) {
+        return Result<Project>::failure(
+            "project_exists", "Project output already exists: " + paths.root().string());
+    }
+
+    const std::vector<std::filesystem::path> directories = {
+        paths.concept_regions_dir(),
+        paths.chunks_dir(),
+        paths.context_dir(),
+        paths.cache_dir(),
+    };
+    for (const auto& directory : directories) {
+        auto created = ensure_directory(directory);
+        if (!created) {
+            std::filesystem::remove_all(paths.root(), error);
+            return Result<Project>::failure(created.error().code, created.error().message);
+        }
+    }
+
+    auto concept_saved = concept.value().save_png(paths.concept_source());
+    if (!concept_saved) {
+        std::filesystem::remove_all(paths.root(), error);
+        return Result<Project>::failure(concept_saved.error().code, concept_saved.error().message);
+    }
+
+    for (int y = 0; y < config.rows; ++y) {
+        for (int x = 0; x < config.columns; ++x) {
+            const ChunkCoord coord{x, y};
+            auto prompt_saved = atomic_file::write_text(paths.chunk_prompt(coord), {});
+            if (!prompt_saved) {
+                std::filesystem::remove_all(paths.root(), error);
+                return Result<Project>::failure(prompt_saved.error().code, prompt_saved.error().message);
+            }
+        }
+    }
+
+    Project project{std::move(config), std::move(paths)};
+    auto sliced = slice_concept(project);
+    if (!sliced) {
+        std::filesystem::remove_all(project.paths.root(), error);
+        return Result<Project>::failure(sliced.error().code, sliced.error().message);
+    }
+    auto saved = repository_.save(project);
+    if (!saved) {
+        std::filesystem::remove_all(project.paths.root(), error);
+        return Result<Project>::failure(saved.error().code, saved.error().message);
+    }
+    return Result<Project>::success(std::move(project));
+}
+
+Result<Project> ProjectService::open_project(const std::string& project_name) const {
+    auto loaded = repository_.load(project_name);
+    if (!loaded) return loaded;
+    auto valid = validate_config(loaded.value().config);
+    if (!valid) return Result<Project>::failure(valid.error().code, valid.error().message);
+    return loaded;
+}
+
+Result<ProjectStatus> ProjectService::status(const Project& project) const {
+    ProjectStatus result;
+    result.config = project.config;
+    result.total_chunks = project.config.columns * project.config.rows;
+
+    for (int y = 0; y < project.config.rows; ++y) {
+        for (int x = 0; x < project.config.columns; ++x) {
+            const ChunkCoord coord{x, y};
+            const auto image_path = project.paths.chunk_image(coord);
+            if (path_is_regular_file(image_path)) {
+                auto image = ImageBuffer::load(image_path);
+                if (!image) {
+                    return Result<ProjectStatus>::failure(image.error().code, image.error().message);
+                }
+                ++result.ready_chunks;
+            }
+            auto prompt = atomic_file::read_text(project.paths.chunk_prompt(coord));
+            if (prompt && !prompt.value().empty()) ++result.prompts_with_content;
+        }
+    }
+    return Result<ProjectStatus>::success(std::move(result));
+}
+
+Result<void> ProjectService::validate(const Project& project) const {
+    auto config_result = validate_config(project.config);
+    if (!config_result) return config_result;
+
+    if (!path_is_regular_file(project.paths.concept_source())) {
+        return Result<void>::failure("missing_concept", "Concept image is missing.");
+    }
+    for (int y = 0; y < project.config.rows; ++y) {
+        for (int x = 0; x < project.config.columns; ++x) {
+            const ChunkCoord coord{x, y};
+            if (!path_is_regular_file(project.paths.chunk_prompt(coord))) {
+                return Result<void>::failure(
+                    "missing_prompt", "Prompt file is missing for chunk " + coord_name(coord));
+            }
+            const auto region_path = project.paths.concept_region(coord);
+            if (!path_is_regular_file(region_path)) {
+                return Result<void>::failure(
+                    "missing_concept_region", "Concept region is missing for chunk " + coord_name(coord));
+            }
+            auto region = ImageBuffer::load(region_path);
+            if (!region) return Result<void>::failure(region.error().code, region.error().message);
+            const auto image_path = project.paths.chunk_image(coord);
+            if (path_is_regular_file(image_path)) {
+                auto image = ImageBuffer::load(image_path);
+                if (!image) return Result<void>::failure(image.error().code, image.error().message);
+                if (!project.config.has_chunk_size() ||
+                    image.value().width() != *project.config.chunk_width ||
+                    image.value().height() != *project.config.chunk_height) {
+                    return Result<void>::failure(
+                        "chunk_size_mismatch", "Ready chunk has a different image size: " + coord_name(coord));
+                }
+            }
+        }
+    }
+    return Result<void>::success();
+}
+
+Result<std::string> ProjectService::read_prompt(const Project& project, ChunkCoord coord) const {
+    auto coord_result = validate_coord(project, coord);
+    if (!coord_result) {
+        return Result<std::string>::failure(coord_result.error().code, coord_result.error().message);
+    }
+    return atomic_file::read_text(project.paths.chunk_prompt(coord));
+}
+
+Result<void> ProjectService::write_prompt(const Project& project,
+                                          ChunkCoord coord,
+                                          std::string_view text) const {
+    auto coord_result = validate_coord(project, coord);
+    if (!coord_result) return coord_result;
+    return atomic_file::write_text(project.paths.chunk_prompt(coord), text);
+}
+
+Result<void> ProjectService::import_prompts(const Project& project,
+                                            const std::filesystem::path& json_path) const {
+    auto content = atomic_file::read_text(json_path);
+    if (!content) return Result<void>::failure(content.error().code, content.error().message);
+
+    struct PromptEntry {
+        ChunkCoord coord;
+        std::string prompt;
+    };
+    std::vector<PromptEntry> entries;
+    std::set<std::pair<int, int>> seen;
+
+    try {
+        const auto parsed = json::parse(content.value());
+        if (!parsed.is_object() || !parsed.contains("prompts") || !parsed["prompts"].is_array()) {
+            return Result<void>::failure(
+                "invalid_prompts_json", "Prompt input must contain a prompts array.");
+        }
+        for (const auto& item : parsed["prompts"]) {
+            if (!item.is_object() || !item.contains("x") || !item.contains("y")) {
+                return Result<void>::failure(
+                    "invalid_prompts_json", "Every prompt entry must contain x, y and prompt.");
+            }
+            const ChunkCoord coord{item.at("x").get<int>(), item.at("y").get<int>()};
+            const auto prompt = prompt_text(item);
+            if (!item.contains("prompt") || !item["prompt"].is_string()) {
+                return Result<void>::failure(
+                    "invalid_prompts_json", "Every prompt entry must contain a string prompt.");
+            }
+            auto coord_result = validate_coord(project, coord);
+            if (!coord_result) return coord_result;
+            if (!seen.emplace(coord.x, coord.y).second) {
+                return Result<void>::failure(
+                    "duplicate_prompt_coord", "Prompt input contains a duplicate coordinate.");
+            }
+            entries.push_back({coord, prompt});
+        }
+    } catch (const std::exception& exception) {
+        return Result<void>::failure(
+            "invalid_prompts_json", std::string("Unable to parse prompts JSON: ") + exception.what());
+    }
+
+    for (const auto& entry : entries) {
+        auto written = write_prompt(project, entry.coord, entry.prompt);
+        if (!written) return written;
+    }
+    return Result<void>::success();
+}
+
+Result<void> ProjectService::slice_concept(const Project& project) const {
+    auto concept = ImageBuffer::load(project.paths.concept_source());
+    if (!concept) return Result<void>::failure(concept.error().code, concept.error().message);
+    auto regions = ConceptSlicer::slice(
+        concept.value(), project.config.columns, project.config.rows);
+    if (!regions) return Result<void>::failure(regions.error().code, regions.error().message);
+    for (int y = 0; y < project.config.rows; ++y) {
+        for (int x = 0; x < project.config.columns; ++x) {
+            const auto index = static_cast<std::size_t>(y * project.config.columns + x);
+            auto saved = regions.value()[index].save_png(project.paths.concept_region({x, y}));
+            if (!saved) return saved;
+        }
+    }
+    return Result<void>::success();
+}
+
+Result<ConceptContext> ProjectService::export_concept_context(const Project& project) const {
+    auto sliced = slice_concept(project);
+    if (!sliced) return Result<ConceptContext>::failure(sliced.error().code, sliced.error().message);
+    std::error_code error;
+    std::filesystem::remove_all(project.paths.concept_context_dir(), error);
+    auto created = ensure_directory(project.paths.concept_context_dir());
+    if (!created) return Result<ConceptContext>::failure(created.error().code, created.error().message);
+
+    ConceptContext context;
+    context.concept_image = project.paths.concept_source();
+    context.regions_dir = project.paths.concept_regions_dir();
+    context.manifest = project.paths.concept_context_dir() / "manifest.json";
+    context.prompts_schema = project.paths.concept_context_dir() / "prompts.schema.json";
+    json region_entries = json::array();
+    for (int y = 0; y < project.config.rows; ++y) {
+        for (int x = 0; x < project.config.columns; ++x) {
+            const auto path = project.paths.concept_region({x, y});
+            context.regions.push_back(path);
+            region_entries.push_back({{"coord", {x, y}}, {"image", path.string()}});
+        }
+    }
+    const json manifest = {
+        {"concept_image", context.concept_image.string()},
+        {"grid", {{"columns", project.config.columns}, {"rows", project.config.rows}}},
+        {"regions", region_entries},
+        {"prompts_schema", context.prompts_schema.string()},
+        {"write_command", "chunkmap --project " + project.config.name +
+            " prompts import --input <prompts.json>"},
+    };
+    const json schema = {
+        {"type", "object"},
+        {"required", {"prompts"}},
+        {"properties", {{"prompts", {
+            {"type", "array"},
+            {"items", {{"type", "object"}, {"required", {"x", "y", "prompt"}}}}
+        }}}},
+    };
+    auto manifest_saved = atomic_file::write_text(context.manifest, manifest.dump(2) + '\n');
+    if (!manifest_saved) return Result<ConceptContext>::failure(
+        manifest_saved.error().code, manifest_saved.error().message);
+    auto schema_saved = atomic_file::write_text(context.prompts_schema, schema.dump(2) + '\n');
+    if (!schema_saved) return Result<ConceptContext>::failure(
+        schema_saved.error().code, schema_saved.error().message);
+    return Result<ConceptContext>::success(std::move(context));
+}
+
+Result<ChunkContext> ProjectService::export_chunk_context(
+    const Project& project, ChunkCoord coord) const {
+    auto coord_result = validate_coord(project, coord);
+    if (!coord_result) return Result<ChunkContext>::failure(
+        coord_result.error().code, coord_result.error().message);
+    auto geometry = image_geometry(project.config);
+    if (!geometry) return Result<ChunkContext>::failure(geometry.error().code, geometry.error().message);
+    auto neighbors = load_neighbors(project, coord);
+    if (!neighbors) return Result<ChunkContext>::failure(neighbors.error().code, neighbors.error().message);
+    auto template_image = TemplateBuilder::build(project.config, neighbors.value());
+    if (!template_image) return Result<ChunkContext>::failure(
+        template_image.error().code, template_image.error().message);
+    auto prompt_text_result = read_prompt(project, coord);
+    if (!prompt_text_result) return Result<ChunkContext>::failure(
+        prompt_text_result.error().code, prompt_text_result.error().message);
+
+    std::error_code error;
+    const auto directory = project.paths.chunk_context_dir(coord);
+    std::filesystem::remove_all(directory, error);
+    auto created = ensure_directory(directory);
+    if (!created) return Result<ChunkContext>::failure(created.error().code, created.error().message);
+
+    ChunkContext context;
+    context.coord = coord;
+    context.manifest = directory / "manifest.json";
+    context.template_image = directory / "template.png";
+    context.mask_image = directory / "mask.png";
+    context.prompt = directory / "prompt.txt";
+    json neighbor_entries = json::array();
+    auto add_neighbor = [&](const char* direction, ChunkCoord neighbor, const auto& image) {
+        if (!image) return;
+        context.ready_directions.emplace_back(direction);
+        neighbor_entries.push_back({
+            {"direction", direction},
+            {"coord", {neighbor.x, neighbor.y}},
+            {"image", project.paths.chunk_image(neighbor).string()}});
+    };
+    add_neighbor("top", {coord.x, coord.y - 1}, neighbors.value().top);
+    add_neighbor("bottom", {coord.x, coord.y + 1}, neighbors.value().bottom);
+    add_neighbor("left", {coord.x - 1, coord.y}, neighbors.value().left);
+    add_neighbor("right", {coord.x + 1, coord.y}, neighbors.value().right);
+
+    const json manifest = {
+        {"chunk", {coord.x, coord.y}},
+        {"expected_size", {*project.config.chunk_width, *project.config.chunk_height}},
+        {"overlap_pixels", {geometry.value().overlap_x, geometry.value().overlap_y}},
+        {"feather_pixels", {geometry.value().feather_x, geometry.value().feather_y}},
+        {"template", context.template_image.string()},
+        {"mask", context.mask_image.string()},
+        {"mask_convention", "white_generate_black_protect"},
+        {"prompt", context.prompt.string()},
+        {"ready_neighbors", neighbor_entries},
+        {"write_command", "chunkmap --project " + project.config.name + " chunk write " +
+            coord_name(coord) + " --image <generated.png>"},
+    };
+    auto template_saved = template_image.value().save_png(context.template_image);
+    if (!template_saved) return Result<ChunkContext>::failure(
+        template_saved.error().code, template_saved.error().message);
+    ImageBuffer mask(template_image.value().width(), template_image.value().height());
+    for (int y = 0; y < mask.height(); ++y) {
+        for (int x = 0; x < mask.width(); ++x) {
+            const bool generate = template_image.value().pixel(x, y)[3] == 0;
+            auto* pixel = mask.pixel(x, y);
+            pixel[0] = generate ? 255U : 0U;
+            pixel[1] = generate ? 255U : 0U;
+            pixel[2] = generate ? 255U : 0U;
+            pixel[3] = 255U;
+        }
+    }
+    auto mask_saved = mask.save_png(context.mask_image);
+    if (!mask_saved) return Result<ChunkContext>::failure(
+        mask_saved.error().code, mask_saved.error().message);
+    auto prompt_saved = atomic_file::write_text(context.prompt, prompt_text_result.value());
+    if (!prompt_saved) return Result<ChunkContext>::failure(
+        prompt_saved.error().code, prompt_saved.error().message);
+    auto manifest_saved = atomic_file::write_text(context.manifest, manifest.dump(2) + '\n');
+    if (!manifest_saved) return Result<ChunkContext>::failure(
+        manifest_saved.error().code, manifest_saved.error().message);
+    return Result<ChunkContext>::success(std::move(context));
+}
+
+Result<std::filesystem::path> ProjectService::rebuild_composite(const Project& project) const {
+    auto geometry = image_geometry(project.config);
+    if (!geometry) return Result<std::filesystem::path>::failure(
+        geometry.error().code, geometry.error().message);
+    std::vector<std::optional<ImageBuffer>> chunks;
+    chunks.reserve(static_cast<std::size_t>(project.config.columns * project.config.rows));
+    for (int y = 0; y < project.config.rows; ++y) {
+        for (int x = 0; x < project.config.columns; ++x) {
+            const auto path = project.paths.chunk_image({x, y});
+            if (!path_is_regular_file(path)) {
+                chunks.emplace_back();
+                continue;
+            }
+            auto image = ImageBuffer::load(path);
+            if (!image) return Result<std::filesystem::path>::failure(
+                image.error().code, image.error().message);
+            chunks.emplace_back(image.take_value());
+        }
+    }
+    auto composite = CompositeBuilder::build(project.config, chunks);
+    if (!composite) return Result<std::filesystem::path>::failure(
+        composite.error().code, composite.error().message);
+    auto saved = composite.value().save_png(project.paths.composite_png());
+    if (!saved) return Result<std::filesystem::path>::failure(saved.error().code, saved.error().message);
+    return Result<std::filesystem::path>::success(project.paths.composite_png());
+}
+
+Result<ChunkWriteResult> ProjectService::import_chunk_image(
+    Project& project, ChunkCoord coord, const std::filesystem::path& image_path) {
+    return store_chunk_image(project, coord, image_path, true, false);
+}
+
+Result<ChunkWriteResult> ProjectService::write_chunk_image(
+    Project& project, ChunkCoord coord, const std::filesystem::path& image_path) {
+    return store_chunk_image(project, coord, image_path, false, true);
+}
+
+Result<ChunkWriteResult> ProjectService::store_chunk_image(
+    Project& project,
+    ChunkCoord coord,
+    const std::filesystem::path& image_path,
+    bool allow_size_initialization,
+    bool require_ready_neighbor) {
+    auto coord_result = validate_coord(project, coord);
+    if (!coord_result) return Result<ChunkWriteResult>::failure(
+        coord_result.error().code, coord_result.error().message);
+    auto source = ImageBuffer::load(image_path);
+    if (!source) return Result<ChunkWriteResult>::failure(source.error().code, source.error().message);
+    bool initialized_size = false;
+    if (!project.config.has_chunk_size()) {
+        if (!allow_size_initialization) {
+            return Result<ChunkWriteResult>::failure(
+                "missing_chunk_size", "Import a chunk image before writing generated chunks.");
+        }
+        if (source.value().width() < 2 || source.value().height() < 2) {
+            return Result<ChunkWriteResult>::failure(
+                "chunk_too_small", "Chunk dimensions must be at least 2x2.");
+        }
+        project.config.chunk_width = source.value().width();
+        project.config.chunk_height = source.value().height();
+        initialized_size = true;
+    }
+    auto neighbors = load_neighbors(project, coord);
+    if (!neighbors) return Result<ChunkWriteResult>::failure(neighbors.error().code, neighbors.error().message);
+    if (require_ready_neighbor && neighbors.value().count() == 0) {
+        return Result<ChunkWriteResult>::failure(
+            "no_ready_neighbor", "Generated chunk writes require at least one Ready orthogonal neighbor.");
+    }
+    auto normalized = ImageNormalizer::normalize(
+        source.value(), project.config, coord, neighbors.value());
+    if (!normalized) return Result<ChunkWriteResult>::failure(
+        normalized.error().code, normalized.error().message);
+    auto registered = ImageRegistration::align(
+        normalized.value().image, project.config, neighbors.value());
+    if (!registered) return Result<ChunkWriteResult>::failure(
+        registered.error().code, registered.error().message);
+
+    auto saved = registered.value().image.save_png(project.paths.chunk_image(coord));
+    if (!saved) return Result<ChunkWriteResult>::failure(saved.error().code, saved.error().message);
+    const json metadata = {
+        {"width", registered.value().image.width()},
+        {"height", registered.value().image.height()},
+        {"normalization", {
+            {"added_left", normalized.value().added_left},
+            {"added_top", normalized.value().added_top},
+            {"added_right", normalized.value().added_right},
+            {"added_bottom", normalized.value().added_bottom}}},
+        {"registration", {
+            {"applied", registered.value().applied},
+            {"offset_x", registered.value().offset_x},
+            {"offset_y", registered.value().offset_y},
+            {"score_before", registered.value().score_before},
+            {"score_after", registered.value().score_after}}},
+    };
+    auto metadata_saved = atomic_file::write_text(
+        project.paths.chunk_metadata(coord), metadata.dump(2) + '\n');
+    if (!metadata_saved) return Result<ChunkWriteResult>::failure(
+        metadata_saved.error().code, metadata_saved.error().message);
+    if (initialized_size) {
+        auto project_saved = repository_.save(project);
+        if (!project_saved) return Result<ChunkWriteResult>::failure(
+            project_saved.error().code, project_saved.error().message);
+    }
+    auto composite = rebuild_composite(project);
+    if (!composite) return Result<ChunkWriteResult>::failure(
+        composite.error().code, composite.error().message);
+    auto rebuild_seam = [&](ChunkCoord first, SeamDirection direction) -> Result<void> {
+        const ChunkCoord second = direction == SeamDirection::Right
+            ? ChunkCoord{first.x + 1, first.y} : ChunkCoord{first.x, first.y + 1};
+        if (!project.config.contains(first) || !project.config.contains(second) ||
+            !path_is_regular_file(project.paths.chunk_image(first)) ||
+            !path_is_regular_file(project.paths.chunk_image(second))) {
+            return Result<void>::success();
+        }
+        auto seam = inspect_seam(project, first, direction);
+        if (!seam) return Result<void>::failure(seam.error().code, seam.error().message);
+        return Result<void>::success();
+    };
+    for (const auto& seam : std::vector<std::pair<ChunkCoord, SeamDirection>>{
+             {coord, SeamDirection::Right},
+             {{coord.x - 1, coord.y}, SeamDirection::Right},
+             {coord, SeamDirection::Bottom},
+             {{coord.x, coord.y - 1}, SeamDirection::Bottom}}) {
+        auto rebuilt = rebuild_seam(seam.first, seam.second);
+        if (!rebuilt) return Result<ChunkWriteResult>::failure(
+            rebuilt.error().code, rebuilt.error().message);
+    }
+    ChunkWriteResult result;
+    result.image = project.paths.chunk_image(coord);
+    result.composite = composite.value();
+    result.added_left = normalized.value().added_left;
+    result.added_top = normalized.value().added_top;
+    result.added_right = normalized.value().added_right;
+    result.added_bottom = normalized.value().added_bottom;
+    result.registration_x = registered.value().offset_x;
+    result.registration_y = registered.value().offset_y;
+    result.registration_score_before = registered.value().score_before;
+    result.registration_score_after = registered.value().score_after;
+    result.registration_applied = registered.value().applied;
+    return Result<ChunkWriteResult>::success(std::move(result));
+}
+
+Result<void> ProjectService::remove_chunk_image(const Project& project, ChunkCoord coord) const {
+    auto coord_result = validate_coord(project, coord);
+    if (!coord_result) return coord_result;
+    std::error_code error;
+    std::filesystem::remove(project.paths.chunk_image(coord), error);
+    if (error) return Result<void>::failure("remove_failed", "Unable to remove chunk image.");
+    std::filesystem::remove(project.paths.chunk_metadata(coord), error);
+    for (const auto& seam : std::vector<std::pair<ChunkCoord, std::string>>{
+             {coord, "right"},
+             {coord, "bottom"},
+             {{coord.x - 1, coord.y}, "right"},
+             {{coord.x, coord.y - 1}, "bottom"}}) {
+        std::filesystem::remove_all(project.paths.seam_dir(seam.first, seam.second), error);
+        if (error) {
+            return Result<void>::failure("remove_failed", "Unable to remove stale seam cache.");
+        }
+    }
+    auto composite = rebuild_composite(project);
+    if (!composite) return Result<void>::failure(composite.error().code, composite.error().message);
+    return Result<void>::success();
+}
+
+Result<SeamAnalysis> ProjectService::inspect_seam(
+    const Project& project, ChunkCoord coord, SeamDirection direction) const {
+    auto coord_result = validate_coord(project, coord);
+    if (!coord_result) return Result<SeamAnalysis>::failure(
+        coord_result.error().code, coord_result.error().message);
+    const ChunkCoord second = direction == SeamDirection::Right
+        ? ChunkCoord{coord.x + 1, coord.y} : ChunkCoord{coord.x, coord.y + 1};
+    if (!project.config.contains(second)) {
+        return Result<SeamAnalysis>::failure("seam_out_of_range", "Seam neighbor is outside the grid.");
+    }
+    auto first_image = ImageBuffer::load(project.paths.chunk_image(coord));
+    auto second_image = ImageBuffer::load(project.paths.chunk_image(second));
+    if (!first_image || !second_image) {
+        return Result<SeamAnalysis>::failure(
+            "seam_not_ready", "Both chunks must be Ready before inspecting their seam.");
+    }
+    auto analysis = SeamAnalyzer::analyze(
+        first_image.value(), second_image.value(), project.config, direction);
+    if (!analysis) return analysis;
+    const std::string name = direction == SeamDirection::Right ? "right" : "bottom";
+    const auto directory = project.paths.seam_dir(coord, name);
+    auto overlap_saved = analysis.value().overlap_preview.save_png(directory / "overlap.png");
+    if (!overlap_saved) return Result<SeamAnalysis>::failure(
+        overlap_saved.error().code, overlap_saved.error().message);
+    auto difference_saved = analysis.value().difference_preview.save_png(directory / "difference.png");
+    if (!difference_saved) return Result<SeamAnalysis>::failure(
+        difference_saved.error().code, difference_saved.error().message);
+    const json metrics = {
+        {"direction", name},
+        {"overlap_pixels", analysis.value().overlap_pixels},
+        {"feather_pixels", analysis.value().feather_pixels},
+        {"mean_absolute_rgb_difference", analysis.value().mean_absolute_rgb_difference},
+    };
+    auto metrics_saved = atomic_file::write_text(directory / "metrics.json", metrics.dump(2) + '\n');
+    if (!metrics_saved) return Result<SeamAnalysis>::failure(
+        metrics_saved.error().code, metrics_saved.error().message);
+    return analysis;
+}
+
+}  // namespace chunkmap
