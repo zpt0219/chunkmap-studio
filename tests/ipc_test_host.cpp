@@ -29,7 +29,7 @@ std::string quote(const std::string& value) {
     return result;
 }
 
-int run_child(int, char** argv) {
+int run_child(int argc, char** argv) {
     std::string command;
     for (int index = 1; index < argc; ++index) {
         if (!command.empty()) command += ' ';

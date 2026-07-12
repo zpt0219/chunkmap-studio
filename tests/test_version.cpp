@@ -1,5 +1,6 @@
 #include "core/version.h"
 
+#include <ostream>
 #include <doctest/doctest.h>
 
 TEST_CASE("core exposes the phase six version") {
