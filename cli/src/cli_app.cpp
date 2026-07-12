@@ -88,9 +88,7 @@ int CliApp::run() {
     if (command_line_.args[0] == "global-prompt") return run_global_prompt();
     if (command_line_.args[0] == "concept") return run_concept();
     if (command_line_.args[0] == "chunk") return run_chunk();
-    if (command_line_.args[0] == "render") return run_render();
     if (command_line_.args[0] == "seam") return run_seam();
-    if (command_line_.args[0] == "map") return run_map();
     return usage_error("Unknown command: " + command_line_.args[0]);
 }
 
@@ -141,11 +139,6 @@ int CliApp::run_project() {
             if (!ratios) return print_error("project init", ratios.error());
             payload.horizontal_overlap_ratio = ratios.value().first;
             payload.vertical_overlap_ratio = ratios.value().second;
-        }
-        if (const auto feather = option_value(command_line_.args, "--feather-ratio")) {
-            auto ratio = parse_double(*feather, "feather ratio");
-            if (!ratio) return print_error("project init", ratio.error());
-            payload.feather_ratio = ratio.value();
         }
         auto request = make_request(chunkmap::CommandType::ProjectCreate);
         request.project_name = payload.name;
@@ -257,12 +250,6 @@ int CliApp::run_chunk() {
     return execute(std::move(request));
 }
 
-int CliApp::run_render() {
-    auto project = require_project();
-    if (!project) return print_error("render", project.error());
-    return execute(make_request(chunkmap::CommandType::Render));
-}
-
 int CliApp::run_seam() {
     if (command_line_.args.size() < 3U || command_line_.args[1] != "inspect") {
         return usage_error("seam inspect requires x,y and --direction right|bottom.");
@@ -279,17 +266,6 @@ int CliApp::run_seam() {
     request.payload = chunkmap::SeamInspectPayload{
         coord.value(), *direction == "right" ? chunkmap::CommandSeamDirection::Right
                                               : chunkmap::CommandSeamDirection::Bottom};
-    return execute(std::move(request));
-}
-
-int CliApp::run_map() {
-    if (command_line_.args.size() < 3U || command_line_.args[1] != "export") {
-        return usage_error("map export requires an output path.");
-    }
-    auto project = require_project();
-    if (!project) return print_error("map export", project.error());
-    auto request = make_request(chunkmap::CommandType::MapExport);
-    request.payload = chunkmap::PathPayload{absolute_path(command_line_.args[2])};
     return execute(std::move(request));
 }
 
@@ -365,8 +341,8 @@ void CliApp::print_help() const {
         << "  chunk import <x,y> --image <path>\n"
         << "  chunk context <x,y>\n  chunk write <x,y> --image <path>\n"
         << "  chunk show <x,y>\n  chunk remove <x,y> --yes\n"
-        << "  render\n  seam inspect <x,y> --direction right|bottom\n"
-        << "  map export <path>\n  --version\n";
+        << "  seam inspect <x,y> --direction right|bottom\n"
+        << "  --version\n";
 }
 
 }  // namespace chunkmap_cli

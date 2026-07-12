@@ -1,387 +1,137 @@
 # ChunkMap Studio 源码快速导览
 
-这份文档面向准备直接阅读源码的开发者。它不重复完整产品设计，而是回答四个问题：
+目标：用最短路径建立“谁持有状态、命令怎么走、图片怎么落盘、地图怎么画”的模型。
+完整架构见 [CODE_ARCHITECTURE_DESIGN.md](./CODE_ARCHITECTURE_DESIGN.md)。
 
-1. 程序由哪些部分组成？
-2. 一条命令如何穿过系统？
-3. 地图图片如何进入、处理并落盘？
-4. 应该按什么顺序阅读源码？
-
-## 1. 先建立整体模型
-
-ChunkMap Studio 是一个 C++17 项目，包含三个主要 target：
-
-| Target | 入口 | 职责 |
-|---|---|---|
-| `chunkmap_core` | 无单独入口 | 命令系统、项目读写、图片处理、IPC、地图几何 |
-| `chunkmap_desktop` | `desktop/src/main.cpp` | Dear ImGui 界面，也是唯一 document host |
-| `chunkmap` | `cli/src/main.cpp` | 解析 CLI 参数，通过 IPC 向 Desktop 提交命令 |
-
-最重要的系统边界是：**Desktop 持有唯一的命令队列，CLI 不直接修改项目文件。**
+## 1. 一张图理解系统
 
 ```mermaid
 flowchart LR
-    UI["Desktop App"] --> Host["DesktopCommandHost"]
-    CLI["chunkmap CLI"] --> IPC["Desktop IPC"]
-    IPC --> Host
-    Host --> Queue["DocumentCommandQueue"]
+    UI["Desktop App"] --> Queue["DocumentCommandQueue"]
+    CLI["CLI"] --> IPC["Desktop IPC"] --> Queue
     Queue --> Dispatcher["CommandDispatcher"]
-    Dispatcher --> Service["ProjectService"]
-    Service --> Files["output/project files"]
-    Service --> Images["image pipeline"]
+    Dispatcher --> Session["ProjectSession"]
+    Session --> Document["ProjectDocument"]
+    Session --> Service["ProjectService"]
+    Service --> Files["Sparse project files"]
 ```
 
-`DocumentCommandQueue` 只是内部 FIFO 串行器，不是 AI 生成任务队列，也不保存历史或提供 undo/redo。
+最重要的边界：Desktop 是唯一 document host；CLI 不直接写项目。Queue 串行执行
+Desktop 与 CLI 的 typed commands。Session 中的内存文档是运行时权威，磁盘是持久化
+边界。
 
-## 2. 核心数据模型
+## 2. 先读数据模型
 
-数据模型很小，建议首先读完。
+1. `src/model/chunk_coord.h`：坐标与稳定文件名 `<x>_<y>`。
+2. `src/model/project_config.h`：grid、可选 chunk size、overlap ratio。
+3. `src/project/project_paths.h/.cpp`：正式路径与 workspace handoff 路径。
+4. `src/model/project.h`：config + paths 的轻量组合。
+5. `src/model/project_document.h/.cpp`：常驻 Prompt/Ready 状态与 lazy ImageBuffer。
+6. `src/project/project_session.h/.cpp`：当前 workspace/service/document 生命周期。
 
-### `ChunkCoord`
-
-文件：`src/model/chunk_coord.h`
-
-一个 `(x, y)` 坐标。地图左上角是 `(0, 0)`，x 向右、y 向下。
-
-### `ProjectConfig`
-
-文件：`src/model/project_config.h`
-
-保存项目的持久化配置：
-
-- schema version；
-- 项目名；
-- columns 和 rows；
-- 可选的 chunk width/height；
-- 水平、垂直 overlap ratio；
-- feather ratio。
-
-新项目最初没有 chunk 尺寸。第一次 `chunk import` 后，导入图片的尺寸成为全项目尺寸。
-
-### `Project`
-
-文件：`src/model/project.h`
-
-`Project` 只是两个对象的组合：
-
-```cpp
-struct Project {
-    ProjectConfig config;
-    ProjectPaths paths;
-};
-```
-
-它不是一个带大量行为的领域对象。行为集中在 `ProjectService`，文件位置集中在 `ProjectPaths`。
-
-### `ProjectPaths`
-
-文件：`src/project/project_paths.h/.cpp`
-
-这是理解磁盘布局的权威入口。不要在其他代码中猜文件名。
-
-一个项目大致保存为：
+磁盘项目只有：
 
 ```text
-output/<project-name>/
-├── project.json
-├── global_prompt.md
-├── concept/
-│   ├── source.png
-│   └── regions/<x,y>.png
-├── chunks/
-│   └── <x,y>/
-│       ├── prompt.md
-│       ├── image.png
-│       └── metadata.json
-├── context/
-│   ├── concept/
-│   └── chunk_<x,y>/
-└── cache/
-    ├── composite.png
-    └── seams/
+project.json
+concept.png
+global_prompt.md       # optional, non-empty
+prompts/<x>_<y>.md     # sparse
+chunks/<x>_<y>.png     # Ready only
 ```
 
-正式状态没有独立枚举。`image.png` 存在即为 Ready，不存在即为 Empty。
+`ProjectDocument::load()` 只扫描一次 Prompt 与 Ready 文件；不在打开时解码所有 Chunk。
+`ProjectDocument::image()` 才执行 lazy PNG decode。
 
-## 3. 命令系统
+## 3. 跟一条 Prompt 命令
 
-命令系统是 Desktop 与 CLI 共用业务行为的关键。
+推荐以 `prompt set` 为第一条完整调用链：
 
-### 3.1 请求：`CommandRequest`
+1. `cli/src/cli_app.cpp` 构造 `CommandRequest`；
+2. `src/command/command_codec.cpp` 编解码 IPC JSON；
+3. `src/ipc/desktop_ipc.cpp` 把请求送给运行中的 Desktop；
+4. `src/command/document_command_queue.cpp` FIFO 执行；
+5. `src/command/command_dispatcher.cpp` 从 `ProjectSession` 取得同一个 document；
+6. `ProjectService::write_prompt()` 原子写入或删除 sparse file；
+7. Dispatcher 更新 `ChunkDocument::prompt` 并发布 `changed_prompts`。
 
-文件：`src/command/command_request.h`
+再看 `prompt show`：它直接读 `ProjectDocument`，不重新打开项目或读取 Prompt 文件。
+`ProjectOpen` 是显式 Reload，会重新构造整个 document。
 
-请求包含：
+## 4. 跟一张 Chunk 图片
 
-- `request_id`：区分 Desktop 和 CLI 请求；
-- `CommandType`：命令类型；
-- `workspace`；
-- 可选项目名；
-- typed `CommandPayload` variant。
-
-例如 `ChunkWrite` 携带 `ChunkImagePayload`，而 `PromptSet` 携带 `PromptSetPayload`。这避免 Dispatcher 处理随意结构的 JSON。
-
-### 3.2 排队：`DocumentCommandQueue`
-
-文件：`src/command/document_command_queue.h/.cpp`
-
-`submit()` 把请求放进 `pending_`，后台 worker 按 FIFO 顺序调用 Dispatcher。调用方通过 `future` 等待结果；Desktop 还可以通过 `take_completions()` 获取完成记录并刷新 UI。
-
-### 3.3 分发：`CommandDispatcher`
-
-文件：`src/command/command_dispatcher.cpp`
-
-它负责命令层工作：
-
-- 检查 payload 类型和必需的项目名；
-- 打开项目；
-- 调用对应的 `ProjectService` 方法；
-- 把领域结果转换为 CLI JSON/text；
-- 构造供 Desktop 刷新的 `ChangeSet`。
-
-`CommandDispatcher::execute()` 是 private，只有 `DocumentCommandQueue` 是 friend。这个结构表达了“正式命令必须排队”的约束。
-
-### 3.4 结果：`CommandResult` 和 `ChangeSet`
-
-文件：`src/command/command_result.h`
-
-`CommandResult` 同时服务两类消费者：
-
-- CLI 使用 `data` 和 `text`；
-- Desktop 使用 `changes`、可选的 `project_snapshot` 和 `seam_analysis`。
-
-`ChangeSet` 不携带新的完整 UI 状态，只描述什么发生了变化，例如：
-
-- 哪些 chunk 或 prompt 改变；
-- Composite 是否改变；
-- 哪些 Seam 或 context 改变；
-- 项目配置是否改变。
-
-## 4. CLI 与 IPC
-
-### CLI
-
-入口文件：
-
-- `cli/src/main.cpp`
-- `cli/src/command_parser.cpp`
-- `cli/src/cli_app.cpp`
-
-`command_parser` 只处理全局参数，`CliApp` 再按 command/subcommand 构造 typed request。`CliApp::execute()` 不创建 `ProjectService`，而是使用 `DesktopIpcClient::send()`。
-
-`--help` 和 `--version` 可以本地执行；项目命令要求 Desktop 正在运行。
-
-### IPC
-
-文件：`src/ipc/desktop_ipc.h/.cpp`
-
-传输层在 Unix/macOS 使用 Unix domain socket，在 Windows 使用 named pipe。消息格式是：
+入口都在 `ProjectService::store_chunk_image()`：
 
 ```text
-4-byte little-endian payload length
-JSON payload
+decode input
+  -> initialize/check chunk size
+  -> deterministic 1px normalization
+  -> generated write restores opaque protected pixels from fresh template
+  -> atomic write chunks/<x>_<y>.png
+  -> update one ChunkDocument
+  -> upload the same in-memory ImageBuffer to one Desktop texture
 ```
 
-`command_codec.h/.cpp` 负责 typed C++ request/result 与 JSON envelope 之间的转换。
+`chunk import` 不要求邻居；`chunk write` 要求至少一个 Ready 正交邻居。两者成功后都是
+普通 Ready chunk。代码不会构建 Composite、metadata 或 Seam cache。
 
-Desktop 侧的 `DesktopCommandHost` 同时持有：
+继续阅读：
 
-- 唯一的 `DocumentCommandQueue`；
-- 接受 CLI 请求的 `DesktopIpcServer`。
+- `src/image/image_buffer.*`：RGBA8 + stb PNG；
+- `src/image/image_pipeline.*`：geometry、Concept slicing、normalization、template；
+- `src/image/seam_analyzer.*`：纯内存 Seam metrics/previews；
+- `desktop/src/gl_texture.*`：按需 texture cache 与内存直传。
 
-因此 Desktop UI 和 CLI 最终调用的是同一个 queue 实例。
+## 5. Context handoff
 
-## 5. 业务中心：`ProjectService`
+`ProjectService::export_concept_context()` 临时切 Concept regions；
+`export_chunk_context()` 生成 template/mask/prompt/manifest。输出都在：
 
-文件：`src/project/project_service.h/.cpp`
-
-这是项目的业务中心，主要职责可以分成四组：
-
-| 分组 | 主要方法 |
-|---|---|
-| 项目生命周期 | `create_project`、`open_project`、`status`、`validate` |
-| Prompt | `read_global_prompt`、`write_global_prompt`、`read_prompt`、`write_prompt`、`import_prompts` |
-| Context | `export_concept_context`、`export_chunk_context` |
-| 正式图片 | `import_chunk_image`、`write_chunk_image`、`remove_chunk_image`、`rebuild_composite`、`inspect_seam` |
-
-`ProjectRepository` 只负责 `project.json` 的序列化；`ProjectService` 负责跨文件的业务流程。
-
-### `chunk import` 与 `chunk write`
-
-两者最终都进入私有方法 `store_chunk_image()`，区别由两个布尔契约控制：
-
-| 操作 | 可初始化项目尺寸 | 必须存在 Ready 正交邻居 |
-|---|---:|---:|
-| `chunk import` | 是 | 否 |
-| `chunk write` | 否 | 是 |
-
-共同管线为：
-
-```mermaid
-flowchart TD
-    Load["读取输入 PNG"] --> Size["初始化或检查 chunk size"]
-    Size --> Neighbors["读取四个正交邻居"]
-    Neighbors --> Normalize["最多 1px 确定性补边"]
-    Normalize --> Register["小范围自动配准"]
-    Register --> Formal["写入正式 image.png 和 metadata"]
-    Formal --> Composite["重建 composite.png"]
-    Composite --> Seams["重建相邻 Seam cache"]
+```text
+<workspace>/.chunkmap/handoff/<project>/
 ```
 
-用户导入图和 AI 生成图一旦写入成功，就没有来源身份差异，都是普通 Ready chunk。
+它们不是项目状态。Concept crop 只辅助规划 Prompt；详细 Chunk 生成只把 Ready 邻居作为
+图片约束。
 
-## 6. 图片管线
+## 6. Desktop 地图
 
-### `ImageBuffer`
+阅读 `desktop/src/app.cpp` 时优先找：
 
-文件：`src/image/image_buffer.h/.cpp`
+- `draw_map()`：按 `(y, x)` 顺序逐张画 Chunk，Empty 使用 Concept UV；
+- `poll_commands()`：处理异步 import 与 CLI completion，只失效局部 texture；
+- `import_image()`：提交异步 command，不阻塞 frame loop；
+- `refresh_seam()`：把内存 preview 直接上传 texture；
+- `apply_project_snapshot()`：create/open/reload 时替换 UI snapshot 和 cache。
 
-统一的 RGBA8 CPU 图片容器，封装 PNG 加载、编码、裁切和 blit。底层使用 stb。
+地图尺寸与 overlap 命中规则在 `src/ui/map_geometry.*`，不需要整张 CPU 或 GPU Composite。
 
-### `image_pipeline`
+## 7. 推荐阅读顺序
 
-文件：`src/image/image_pipeline.h/.cpp`
+第一轮（30 分钟）：
 
-包含三个相互独立的算法：
+1. `project_config.h`
+2. `project_paths.*`
+3. `project_document.*`
+4. `project_session.*`
+5. `document_command_queue.cpp`
+6. `command_dispatcher.cpp` 中 PromptShow/PromptSet
 
-- `ConceptSlicer`：按 columns/rows 切分 Concept Map；
-- `TemplateBuilder`：从 Ready 正交邻居复制 overlap，构造生图模板；
-- `ImageNormalizer`：允许输入每个维度最多少 1px，并根据邻居误差选择补在哪一侧。
+第二轮（图片）：
 
-`image_geometry()` 把比例配置转换成 overlap、step 和 feather 像素数。
+1. `ProjectService::store_chunk_image()`
+2. `image_pipeline.*`
+3. `export_chunk_context()`
+4. `SeamAnalyzer::analyze()`
+5. Desktop `draw_map()` 与 `poll_commands()`
 
-### 自动配准
+第三轮（边界与验证）：
 
-文件：`src/image/image_registration.h/.cpp`
+1. `project_repository.cpp` 的 schema v1→v2 migration
+2. `command_codec.cpp`
+3. `desktop_ipc.cpp`
+4. `tests/test_project_service.cpp`
+5. `tests/test_command_system.cpp`
+6. `tests/phase3_cli_test.cmake`
 
-`ImageRegistration::align()` 在有限平移范围内比较候选图和所有 Ready 邻居的 overlap。评分结合结构差异、颜色差异和位移惩罚；改善不足或最佳点落在搜索边界时不会应用平移。
-
-### Composite 与 Seam
-
-文件：
-
-- `src/image/composite_builder.cpp`
-- `src/image/seam_analyzer.cpp`
-
-Composite 根据 step 把所有 Ready chunk 合成一张地图，并在 overlap 区域做 feather。Seam Analyzer 针对一对水平或垂直相邻 chunk，产生：
-
-- mean absolute RGB difference；
-- overlap preview；
-- difference preview。
-
-## 7. Desktop UI
-
-入口：`desktop/src/main.cpp`
-
-`main.cpp` 只负责 GLFW、OpenGL 和 ImGui 生命周期。真正的 UI 和 session state 都在 `desktop/src/app.h/.cpp` 的 `App` 中。
-
-`App::draw()` 每帧依次：
-
-1. 处理 CLI 命令 completion；
-2. 绘制 DockSpace；
-3. 绘制 Toolbar；
-4. 绘制地图；
-5. 绘制 Inspector 和 modal；
-6. 到期时自动保存 Prompt。
-
-主要 UI 状态包括：
-
-- 当前 `Project` snapshot；
-- 当前选中坐标；
-- Global Prompt、Chunk Prompt buffer 和 dirty flag；
-- zoom/pan；
-- 纹理缓存；
-- 当前 Seam 分析结果。
-
-地图画布不拥有项目数据。点击、导入、保存 Prompt 等动作都会构造 `CommandRequest` 并交给 `DesktopCommandHost`。
-
-`poll_commands()` 只处理 CLI 来源的 completion；Desktop 自己同步等待的命令通过 `desktop-` request id 被过滤掉。
-
-## 8. 推荐阅读顺序
-
-不要一开始顺序阅读整个 `project_service.cpp`。建议按下面五轮阅读。
-
-### 第一轮：数据和磁盘布局
-
-1. `src/model/chunk_coord.h`
-2. `src/model/project_config.h`
-3. `src/model/project.h`
-4. `src/project/project_paths.h/.cpp`
-5. `src/project/project_repository.cpp`
-
-读完应能回答：一个项目在内存和磁盘上分别是什么。
-
-### 第二轮：最短命令链
-
-以 `prompt show` 或 `prompt set` 为例：
-
-1. `cli/src/cli_app.cpp`
-2. `src/command/command_request.h`
-3. `src/command/command_codec.cpp`
-4. `src/ipc/desktop_ipc.cpp`
-5. `src/command/document_command_queue.cpp`
-6. `src/command/command_dispatcher.cpp`
-7. `ProjectService::read_prompt/write_prompt`
-
-读完应能回答：CLI 为什么不能绕过 Desktop 写文件。
-
-### 第三轮：图片主流程
-
-从 `ProjectService::store_chunk_image()` 开始，遇到调用再跳转到：
-
-1. `ImageNormalizer::normalize`
-2. `ImageRegistration::align`
-3. `CompositeBuilder::build`
-4. `ProjectService::inspect_seam`
-5. `SeamAnalyzer::analyze`
-
-读完应能回答：一张输入图如何成为正式 chunk，并影响整张地图。
-
-### 第四轮：Context 交接
-
-阅读：
-
-1. `ProjectService::export_concept_context`
-2. `ProjectService::export_chunk_context`
-3. `TemplateBuilder::build`
-4. 对应的 manifest JSON 生成代码。
-
-读完应能区分：Concept Context 用于写 Prompt，Chunk Context 用于生成详细图片。
-
-### 第五轮：Desktop
-
-1. `desktop/src/main.cpp`
-2. `desktop/src/desktop_command_host.cpp`
-3. `App::draw`
-4. `App::draw_map`
-5. `App::draw_inspector`
-6. `App::poll_commands`
-7. `desktop/src/gl_texture.cpp`
-
-读完应能回答：Desktop 如何展示 Core 状态，以及 CLI 修改如何刷新到界面。
-
-## 9. 测试如何对应架构
-
-| 测试 | 重点 |
-|---|---|
-| `test_project_service.cpp` | 项目、Prompt、Context 和 chunk 业务契约 |
-| `test_image_pipeline.cpp` | 切片、模板、归一化和 Composite |
-| `test_image_registration.cpp` | 自动配准 |
-| `test_golden_images.cpp` | 确定性的模板和 Composite 像素布局 |
-| `test_command_system.cpp` | typed codec、FIFO queue、IPC 单实例 |
-| `test_phase6_architecture.cpp` | 防止 CLI/Desktop 恢复直接写入旁路 |
-| `phase2_cli_test.cmake` | 项目与 Prompt CLI 流程 |
-| `phase3_cli_test.cmake` | chunk/context/render/seam CLI 流程 |
-
-遇到不确定的行为时，先找 `test_project_service.cpp` 和相关图片测试。它们通常比 UI 代码更直接地表达当前契约。
-
-## 10. 阅读时始终记住的边界
-
-- Desktop 是唯一 document host。
-- CLI 只通过 IPC 提交 typed command。
-- 正式 mutation 的调用链是 `Queue -> Dispatcher -> ProjectService`。
-- Concept 图只用于理解布局和生成文字 Prompt。
-- 详细 chunk 的图片 context 只来自 Ready 邻居。
-- chunk 只有 Empty/Ready，没有候选、审批和历史状态。
-- `import` 可建立孤立锚点；`write` 必须有 Ready 正交邻居。
-- Context、Composite 和 Seam 都是可重建派生物；`project.json`、Prompt 和正式 chunk 图片是项目的核心内容。
+读完应能回答：为什么 CLI 离线不能写；为什么外部文件修改不会自动进入 session；为什么
+上传一张图只改变一个正式 PNG、一个 ChunkDocument 和一个 texture。

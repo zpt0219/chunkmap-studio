@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -21,20 +22,13 @@ struct ProjectKey {
     }
 };
 
-struct SeamKey {
-    ChunkCoord coord;
-    SeamDirection direction = SeamDirection::Right;
-};
-
 struct ChangeSet {
     std::optional<ProjectKey> project;
     bool project_changed = false;
-    bool composite_changed = false;
     bool concept_changed = false;
     bool global_prompt_changed = false;
     std::vector<ChunkCoord> changed_chunks;
     std::vector<ChunkCoord> changed_prompts;
-    std::vector<SeamKey> changed_seams;
     std::vector<std::filesystem::path> changed_contexts;
 };
 
@@ -44,6 +38,7 @@ struct CommandResult {
     ChangeSet changes;
     std::optional<Project> project_snapshot;
     std::optional<SeamAnalysis> seam_analysis;
+    std::shared_ptr<const ImageBuffer> changed_chunk_image;
 };
 
 ProjectKey make_project_key(const std::filesystem::path& workspace,

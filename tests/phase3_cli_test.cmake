@@ -74,7 +74,8 @@ run_chunkmap(--project phase3-world --json chunk context 0,1)
 if(NOT LAST_OUTPUT MATCHES "\"mask\"")
     message(FATAL_ERROR "Chunk context did not report an inpaint mask: ${LAST_OUTPUT}")
 endif()
-file(READ "${WORKSPACE}/output/phase3-world/context/chunk_0_1/prompt.txt" combined_prompt)
+set(handoff_root "${WORKSPACE}/.chunkmap/handoff/phase3-world")
+file(READ "${handoff_root}/chunk_0_1/prompt.txt" combined_prompt)
 if(NOT combined_prompt MATCHES "GLOBAL VISUAL STYLE" OR
    NOT combined_prompt MATCHES "Top-down GBA pixel art" OR
    NOT combined_prompt MATCHES "CHUNK CONTENT" OR
@@ -82,40 +83,48 @@ if(NOT combined_prompt MATCHES "GLOBAL VISUAL STYLE" OR
     message(FATAL_ERROR "Chunk context did not include Global Prompt: ${combined_prompt}")
 endif()
 run_chunkmap(--project phase3-world --json chunk write 0,1 --image "${IMAGE}")
-if(NOT LAST_OUTPUT MATCHES "\"registration\"")
-    message(FATAL_ERROR "Chunk write did not report registration: ${LAST_OUTPUT}")
+if(LAST_OUTPUT MATCHES "registration" OR LAST_OUTPUT MATCHES "composite")
+    message(FATAL_ERROR "Chunk write leaked removed derived state: ${LAST_OUTPUT}")
 endif()
 run_chunkmap(--project phase3-world --json seam inspect 0,1 --direction right)
-run_chunkmap(--project phase3-world --json render)
-run_chunkmap(--project phase3-world --json map export "${WORKSPACE}/exported-map.png")
 run_chunkmap(--project phase3-world project validate)
 
 set(project_root "${WORKSPACE}/output/phase3-world")
 foreach(required_file
-        "concept/regions/0_0.png"
-        "concept/regions/1_1.png"
-        "context/concept/manifest.json"
-        "context/concept/prompts.schema.json"
-        "context/chunk_0_1/template.png"
-        "context/chunk_0_1/mask.png"
-        "context/chunk_0_1/global_prompt.txt"
-        "context/chunk_0_1/chunk_prompt.txt"
-        "context/chunk_0_1/prompt.txt"
-        "context/chunk_0_1/manifest.json"
-        "chunks/0_1/image.png"
-        "chunks/0_1/metadata.json"
-        "cache/composite.png"
-        "cache/seams/0_1_right/metrics.json")
+        "project.json"
+        "concept.png"
+        "global_prompt.md"
+        "prompts/0_1.md"
+        "chunks/0_1.png"
+        "chunks/1_1.png")
     if(NOT EXISTS "${project_root}/${required_file}")
         message(FATAL_ERROR "Expected Phase 3 file missing: ${project_root}/${required_file}")
     endif()
 endforeach()
 
-if(NOT EXISTS "${WORKSPACE}/exported-map.png")
-    message(FATAL_ERROR "Map export is missing")
-endif()
+foreach(required_handoff
+        "concept/regions/0_0.png"
+        "concept/regions/1_1.png"
+        "concept/manifest.json"
+        "concept/prompts.schema.json"
+        "chunk_0_1/template.png"
+        "chunk_0_1/mask.png"
+        "chunk_0_1/global_prompt.txt"
+        "chunk_0_1/chunk_prompt.txt"
+        "chunk_0_1/prompt.txt"
+        "chunk_0_1/manifest.json")
+    if(NOT EXISTS "${handoff_root}/${required_handoff}")
+        message(FATAL_ERROR "Expected handoff file missing: ${handoff_root}/${required_handoff}")
+    endif()
+endforeach()
 
-file(READ "${project_root}/context/chunk_0_1/manifest.json" chunk_manifest)
+foreach(forbidden_path "cache" "context" "concept" "chunks/0_1" "chunks/1_1")
+    if(EXISTS "${project_root}/${forbidden_path}")
+        message(FATAL_ERROR "Derived project path must not exist: ${project_root}/${forbidden_path}")
+    endif()
+endforeach()
+
+file(READ "${handoff_root}/chunk_0_1/manifest.json" chunk_manifest)
 if(chunk_manifest MATCHES "concept_image" OR chunk_manifest MATCHES "concept/regions")
     message(FATAL_ERROR "Chunk context leaked a concept image reference")
 endif()

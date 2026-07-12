@@ -19,6 +19,9 @@ std::filesystem::path WorkspacePaths::output_root() const {
 std::filesystem::path WorkspacePaths::project_root(const std::string& project_name) const {
     return output_root() / project_name;
 }
+std::filesystem::path WorkspacePaths::handoff_root(const std::string& project_name) const {
+    return root_ / ".chunkmap" / "handoff" / project_name;
+}
 
 ProjectPaths::ProjectPaths(std::filesystem::path workspace_root, std::string project_name)
     : project_root_(WorkspacePaths(std::move(workspace_root)).project_root(project_name)),
@@ -26,34 +29,31 @@ ProjectPaths::ProjectPaths(std::filesystem::path workspace_root, std::string pro
 
 std::filesystem::path ProjectPaths::project_json() const { return project_root_ / "project.json"; }
 std::filesystem::path ProjectPaths::global_prompt() const { return project_root_ / "global_prompt.md"; }
-std::filesystem::path ProjectPaths::concept_dir() const { return project_root_ / "concept"; }
-std::filesystem::path ProjectPaths::concept_source() const { return concept_dir() / "source.png"; }
-std::filesystem::path ProjectPaths::concept_regions_dir() const { return concept_dir() / "regions"; }
-std::filesystem::path ProjectPaths::concept_region(ChunkCoord coord) const {
-    return concept_regions_dir() / (coord_name(coord) + ".png");
-}
+std::filesystem::path ProjectPaths::concept_source() const { return project_root_ / "concept.png"; }
 std::filesystem::path ProjectPaths::chunks_dir() const { return project_root_ / "chunks"; }
-std::filesystem::path ProjectPaths::chunk_dir(ChunkCoord coord) const {
-    return chunks_dir() / coord_name(coord);
-}
+std::filesystem::path ProjectPaths::prompts_dir() const { return project_root_ / "prompts"; }
 std::filesystem::path ProjectPaths::chunk_prompt(ChunkCoord coord) const {
-    return chunk_dir(coord) / "prompt.md";
+    return prompts_dir() / (coord_name(coord) + ".md");
 }
 std::filesystem::path ProjectPaths::chunk_image(ChunkCoord coord) const {
-    return chunk_dir(coord) / "image.png";
+    return chunks_dir() / (coord_name(coord) + ".png");
 }
-std::filesystem::path ProjectPaths::chunk_metadata(ChunkCoord coord) const {
-    return chunk_dir(coord) / "metadata.json";
+
+WorkspaceHandoffPaths::WorkspaceHandoffPaths(
+    std::filesystem::path workspace_root, std::string project_name)
+    : workspace_(std::move(workspace_root)), project_name_(std::move(project_name)) {}
+std::filesystem::path WorkspaceHandoffPaths::root() const {
+    return workspace_.handoff_root(project_name_);
 }
-std::filesystem::path ProjectPaths::context_dir() const { return project_root_ / "context"; }
-std::filesystem::path ProjectPaths::concept_context_dir() const { return context_dir() / "concept"; }
-std::filesystem::path ProjectPaths::chunk_context_dir(ChunkCoord coord) const {
-    return context_dir() / ("chunk_" + coord_name(coord));
+std::filesystem::path WorkspaceHandoffPaths::concept_dir() const { return root() / "concept"; }
+std::filesystem::path WorkspaceHandoffPaths::concept_regions_dir() const {
+    return concept_dir() / "regions";
 }
-std::filesystem::path ProjectPaths::cache_dir() const { return project_root_ / "cache"; }
-std::filesystem::path ProjectPaths::composite_png() const { return cache_dir() / "composite.png"; }
-std::filesystem::path ProjectPaths::seam_dir(ChunkCoord coord, const std::string& direction) const {
-    return cache_dir() / "seams" / (coord_name(coord) + "_" + direction);
+std::filesystem::path WorkspaceHandoffPaths::concept_region(ChunkCoord coord) const {
+    return concept_regions_dir() / (coord_name(coord) + ".png");
+}
+std::filesystem::path WorkspaceHandoffPaths::chunk_dir(ChunkCoord coord) const {
+    return root() / ("chunk_" + coord_name(coord));
 }
 bool is_valid_project_name(const std::string& name) {
     if (name.empty() || name == "." || name == "..") return false;

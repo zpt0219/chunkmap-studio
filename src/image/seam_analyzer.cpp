@@ -25,7 +25,6 @@ Result<SeamAnalysis> SeamAnalyzer::analyze(const ImageBuffer& first,
     SeamAnalysis result;
     result.direction = direction;
     result.overlap_pixels = horizontal ? geometry.value().overlap_x : geometry.value().overlap_y;
-    result.feather_pixels = horizontal ? geometry.value().feather_x : geometry.value().feather_y;
     result.overlap_preview = ImageBuffer(preview_width, preview_height);
     result.difference_preview = ImageBuffer(preview_width, preview_height);
 

@@ -1,14 +1,13 @@
 #pragma once
 
 #include "core/result.h"
+#include "image/image_buffer.h"
 
 #include <filesystem>
 #include <map>
 #include <memory>
 
 namespace chunkmap_desktop {
-
-int maximum_texture_size();
 
 class GlTexture {
 public:
@@ -18,6 +17,7 @@ public:
     GlTexture& operator=(const GlTexture&) = delete;
 
     chunkmap::Result<void> load(const std::filesystem::path& path);
+    chunkmap::Result<void> load(const chunkmap::ImageBuffer& image);
     void reset();
 
     unsigned int id() const { return id_; }
@@ -33,6 +33,8 @@ private:
 class TextureCache {
 public:
     GlTexture* get(const std::filesystem::path& path);
+    chunkmap::Result<void> put(const std::filesystem::path& path,
+                               const chunkmap::ImageBuffer& image);
     void invalidate(const std::filesystem::path& path);
     void clear();
     const std::string& last_error() const { return last_error_; }

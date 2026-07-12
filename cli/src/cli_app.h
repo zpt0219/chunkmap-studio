@@ -24,9 +24,7 @@ private:
     int run_global_prompt();
     int run_concept();
     int run_chunk();
-    int run_render();
     int run_seam();
-    int run_map();
 
     int execute(chunkmap::CommandRequest request);
     chunkmap::CommandRequest make_request(chunkmap::CommandType type) const;

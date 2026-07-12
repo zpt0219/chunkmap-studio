@@ -125,11 +125,12 @@ Prompt, and a combined `prompt.txt` alongside its template and mask.
 The same workflow can be used without Codex or the CLI. Select a chunk with at
 least one Ready orthogonal neighbor and use `Export Context` in the Chunk tab.
 The app writes `template.png`, `mask.png`, `prompt.txt`, and `manifest.json`,
-then reveals the context folder. `mask.png` uses white for the area to generate
+under `.chunkmap/handoff/<project>/`, then reveals the context folder. `mask.png` uses white for the area to generate
 and black for protected neighbor pixels. Generate in Stable Diffusion, ComfyUI,
 or another external tool, then use the same `Import Image` or `Replace Image`
 action used for map anchors. The result goes through dimension checks,
-registration, seam rebuild, and official image replacement.
+deterministic 1px normalization, protected-neighbor pixel restoration, and
+official image replacement.
 
 Export the Concept Map and region crops for prompt planning:
 
@@ -147,20 +148,37 @@ neighbors, then write the generated image as the official chunk:
 ```
 
 `chunk write` validates dimensions, allows deterministic 1px edge padding,
-automatically registers small translations against all Ready neighbors, then
-overwrites the official image and rebuilds `cache/composite.png`. Its JSON and
-chunk metadata report the applied offset and before/after registration scores.
+restores every protected overlap pixel from Ready neighbors, then overwrites
+the one formal chunk image. It does not build a Composite, metadata, or Seam
+cache.
 Generated writes require at least one Ready orthogonal neighbor. User imports
 do not, so several disconnected reference images can anchor the map style.
 
-Render, inspect a seam, or export the current map:
+Inspect a seam in memory:
 
 ```bash
-./build/cli/chunkmap --project my-world render
 ./build/cli/chunkmap --project my-world \
   seam inspect 1,2 --direction right --json
-./build/cli/chunkmap --project my-world map export /path/to/map.png
 ```
+
+The Desktop draws Ready chunk textures directly with their configured overlap.
+The project deliberately has no Composite file and no automatic whole-map
+export. A future explicit export feature will write outside the project.
+
+The persisted project is intentionally sparse:
+
+```text
+output/my-world/
+  project.json
+  concept.png
+  global_prompt.md       # only when non-empty
+  prompts/<x>_<y>.md     # only when non-empty
+  chunks/<x>_<y>.png     # only when Ready
+```
+
+Desktop owns a long-lived in-memory `ProjectDocument`. CLI commands execute
+against that same document through IPC. Use Desktop Reload to intentionally
+re-read external file changes.
 
 ## Test
 
@@ -175,8 +193,7 @@ default on supported non-MSVC compilers. Disable them when needed with:
 cmake -S . -B build -DCHUNKMAP_ENABLE_SANITIZERS=OFF
 ```
 
-Golden fixtures under `tests/golden/` lock the deterministic four-side template
-and 3x3 composite pixel layouts.
+Golden fixtures under `tests/golden/` lock the deterministic four-side template.
 
 ## Core And CLI Build
 

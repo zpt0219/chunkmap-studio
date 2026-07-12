@@ -19,7 +19,6 @@ struct MapGeometry {
 };
 
 Result<MapGeometry> map_geometry(const ProjectConfig& config);
-Result<bool> map_fits_texture(const ProjectConfig& config, int maximum_texture_size);
 std::optional<ChunkCoord> topmost_chunk_at(
     const ProjectConfig& config, double world_x, double world_y);
 

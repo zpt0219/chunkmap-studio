@@ -25,9 +25,7 @@ enum class CommandType {
     ChunkWrite,
     ChunkShow,
     ChunkRemove,
-    Render,
     SeamInspect,
-    MapExport,
 };
 
 struct ProjectCreatePayload {
@@ -37,7 +35,6 @@ struct ProjectCreatePayload {
     int rows = 0;
     double horizontal_overlap_ratio = 0.15;
     double vertical_overlap_ratio = 0.15;
-    double feather_ratio = 0.03;
 };
 
 struct CoordPayload {

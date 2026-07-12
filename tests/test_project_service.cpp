@@ -1,5 +1,6 @@
 #include "image/image_buffer.h"
 #include "io/atomic_file.h"
+#include "model/project_document.h"
 #include "project/project_service.h"
 
 #include <doctest/doctest.h>
@@ -58,7 +59,7 @@ chunkmap::Project create_project(TempWorkspace& workspace,
 
 }  // namespace
 
-TEST_CASE("project creation leaves chunk size empty and creates prompt files") {
+TEST_CASE("project creation persists only minimal formal inputs") {
     TempWorkspace workspace;
     chunkmap::ProjectService service(workspace.path);
     auto project = create_project(workspace, service);
@@ -67,19 +68,24 @@ TEST_CASE("project creation leaves chunk size empty and creates prompt files") {
     CHECK(project.config.rows == 2);
     CHECK_FALSE(project.config.has_chunk_size());
     CHECK(std::filesystem::is_regular_file(project.paths.concept_source()));
-    CHECK(std::filesystem::is_regular_file(project.paths.global_prompt()));
+    CHECK_FALSE(std::filesystem::exists(project.paths.global_prompt()));
     auto global_prompt = service.read_global_prompt(project);
     REQUIRE(global_prompt.ok());
     CHECK(global_prompt.value().empty());
 
-    for (int y = 0; y < project.config.rows; ++y) {
-        for (int x = 0; x < project.config.columns; ++x) {
-            CHECK(std::filesystem::is_regular_file(
-                project.paths.chunk_prompt({x, y})));
-            CHECK(std::filesystem::is_regular_file(
-                project.paths.concept_region({x, y})));
-        }
-    }
+    CHECK(std::filesystem::is_empty(project.paths.chunks_dir()));
+    CHECK(std::filesystem::is_empty(project.paths.prompts_dir()));
+    CHECK_FALSE(std::filesystem::exists(project.paths.root() / "cache"));
+    CHECK_FALSE(std::filesystem::exists(project.paths.root() / "context"));
+    CHECK_FALSE(std::filesystem::exists(project.paths.root() / "concept"));
+    auto project_json = chunkmap::atomic_file::read_text(project.paths.project_json());
+    REQUIRE(project_json.ok());
+    const auto config = nlohmann::json::parse(project_json.value());
+    CHECK(config.size() == 5);
+    CHECK(config.at("schema_version") == 2);
+    CHECK_FALSE(config.contains("name"));
+    CHECK_FALSE(config.contains("concept_file"));
+    CHECK_FALSE(config.contains("feather_ratio"));
     CHECK(service.validate(project).ok());
 }
 
@@ -96,6 +102,58 @@ TEST_CASE("global prompt can be edited independently from chunk prompts") {
     REQUIRE(chunk.ok());
     CHECK(global.value() == "Top-down GBA pixel art");
     CHECK(chunk.value() == "A forest path");
+}
+
+TEST_CASE("empty prompts remove sparse files") {
+    TempWorkspace workspace;
+    chunkmap::ProjectService service(workspace.path);
+    auto project = create_project(workspace, service);
+
+    REQUIRE(service.write_prompt(project, {1, 0}, "temporary").ok());
+    REQUIRE(service.write_global_prompt(project, "temporary style").ok());
+    REQUIRE(service.write_prompt(project, {1, 0}, "").ok());
+    REQUIRE(service.write_global_prompt(project, "").ok());
+    CHECK_FALSE(std::filesystem::exists(project.paths.chunk_prompt({1, 0})));
+    CHECK_FALSE(std::filesystem::exists(project.paths.global_prompt()));
+}
+
+TEST_CASE("schema v1 migration keeps formal content and removes derived files") {
+    TempWorkspace workspace;
+    const auto root = workspace.path / "output" / "legacy-world";
+    std::filesystem::create_directories(root / "concept/regions");
+    std::filesystem::create_directories(root / "chunks/0_0/history");
+    std::filesystem::create_directories(root / "chunks/1_0");
+    std::filesystem::create_directories(root / "cache/seams");
+    std::filesystem::create_directories(root / "context/chunk_0_0");
+    const auto concept = workspace.make_image("legacy-concept.png", 12, 8);
+    const auto chunk = workspace.make_image("legacy-chunk.png", 9, 7);
+    REQUIRE(chunkmap::atomic_file::write_binary(
+        root / "concept/source.png", chunkmap::atomic_file::read_binary(concept).value()).ok());
+    REQUIRE(chunkmap::atomic_file::write_binary(
+        root / "chunks/0_0/image.png", chunkmap::atomic_file::read_binary(chunk).value()).ok());
+    REQUIRE(chunkmap::atomic_file::write_text(root / "chunks/0_0/prompt.md", "keep prompt").ok());
+    REQUIRE(chunkmap::atomic_file::write_text(root / "chunks/1_0/prompt.md", "").ok());
+    REQUIRE(chunkmap::atomic_file::write_text(root / "global_prompt.md", "legacy style").ok());
+    const nlohmann::json legacy = {
+        {"schema_version", 1}, {"name", "legacy-world"},
+        {"columns", 2}, {"rows", 1}, {"chunk_size", {9, 7}},
+        {"overlap_ratio", {0.15, 0.15}}, {"feather_ratio", 0.03},
+        {"concept_file", "concept/source.png"}};
+    REQUIRE(chunkmap::atomic_file::write_text(root / "project.json", legacy.dump(2)).ok());
+
+    chunkmap::ProjectService service(workspace.path);
+    auto migrated = service.open_project("legacy-world");
+    REQUIRE(migrated.ok());
+    CHECK(migrated.value().config.schema_version == 2);
+    CHECK(std::filesystem::is_regular_file(root / "concept.png"));
+    CHECK(std::filesystem::is_regular_file(root / "chunks/0_0.png"));
+    CHECK(std::filesystem::is_regular_file(root / "prompts/0_0.md"));
+    CHECK(std::filesystem::is_regular_file(root / "global_prompt.md"));
+    CHECK_FALSE(std::filesystem::exists(root / "concept"));
+    CHECK_FALSE(std::filesystem::exists(root / "context"));
+    CHECK_FALSE(std::filesystem::exists(root / "cache"));
+    CHECK_FALSE(std::filesystem::exists(root / "chunks/0_0"));
+    CHECK_FALSE(std::filesystem::exists(root / "prompts/1_0.md"));
 }
 
 TEST_CASE("legacy project without global prompt treats it as empty") {
@@ -135,10 +193,6 @@ TEST_CASE("first imported image determines chunk size and survives reload") {
     REQUIRE(saved_image.ok());
     CHECK(saved_image.value().width() == 9);
     CHECK(saved_image.value().height() == 7);
-    auto metadata = chunkmap::atomic_file::read_text(
-        reopened.value().paths.chunk_metadata({2, 1}));
-    REQUIRE(metadata.ok());
-    CHECK_FALSE(nlohmann::json::parse(metadata.value()).contains("is_seed"));
     auto project_json = chunkmap::atomic_file::read_text(reopened.value().paths.project_json());
     REQUIRE(project_json.ok());
     CHECK_FALSE(nlohmann::json::parse(project_json.value()).contains("seed"));
@@ -252,6 +306,10 @@ TEST_CASE("concept context exports regions schema and manifest") {
     CHECK(context.value().regions.size() == 6);
     CHECK(std::filesystem::is_regular_file(context.value().manifest));
     CHECK(std::filesystem::is_regular_file(context.value().prompts_schema));
+    const auto expected_handoff = workspace.path / ".chunkmap" / "handoff" / "test-world";
+    CHECK(context.value().manifest.string().rfind(expected_handoff.string(), 0) == 0);
+    CHECK_FALSE(context.value().manifest.string().rfind(project.paths.root().string(), 0) == 0);
+    CHECK_FALSE(std::filesystem::exists(project.paths.root() / "context"));
     auto manifest = chunkmap::atomic_file::read_text(context.value().manifest);
     REQUIRE(manifest.ok());
     CHECK(manifest.value().find("concept_image") != std::string::npos);
@@ -278,6 +336,9 @@ TEST_CASE("chunk context requires a Ready neighbor and excludes concept referenc
     CHECK(std::filesystem::is_regular_file(context.value().mask_image));
     CHECK(std::filesystem::is_regular_file(context.value().global_prompt));
     CHECK(std::filesystem::is_regular_file(context.value().chunk_prompt));
+    CHECK(context.value().manifest.string().rfind(
+        (workspace.path / ".chunkmap" / "handoff" / "test-world").string(), 0) == 0);
+    CHECK_FALSE(std::filesystem::exists(project.paths.root() / "context"));
     auto combined = chunkmap::atomic_file::read_text(context.value().prompt);
     REQUIRE(combined.ok());
     CHECK(combined.value() ==
@@ -303,7 +364,7 @@ TEST_CASE("chunk context requires a Ready neighbor and excludes concept referenc
     CHECK(chunk_only.value() == "dense forest path");
 }
 
-TEST_CASE("chunk write overwrites the official image and rebuilds composite") {
+TEST_CASE("chunk write overwrites only the formal image and protects neighbor overlap") {
     TempWorkspace workspace;
     chunkmap::ProjectService service(workspace.path);
     auto project = create_project(workspace, service);
@@ -312,7 +373,6 @@ TEST_CASE("chunk write overwrites the official image and rebuilds composite") {
     const auto first = workspace.make_image("first.png", 10, 10);
     auto first_write = service.write_chunk_image(project, {1, 1}, first);
     REQUIRE(first_write.ok());
-    CHECK(std::filesystem::is_regular_file(first_write.value().composite));
 
     chunkmap::ImageBuffer replacement(10, 10);
     for (auto& value : replacement.rgba()) value = 77;
@@ -320,17 +380,12 @@ TEST_CASE("chunk write overwrites the official image and rebuilds composite") {
     REQUIRE(replacement.save_png(replacement_path).ok());
     auto second_write = service.write_chunk_image(project, {1, 1}, replacement_path);
     REQUIRE(second_write.ok());
-    CHECK(std::filesystem::is_regular_file(
-        project.paths.seam_dir({1, 1}, "right") / "metrics.json"));
     auto official = chunkmap::ImageBuffer::load(project.paths.chunk_image({1, 1}));
     REQUIRE(official.ok());
     CHECK(official.value().rgba()[0] == 77);
-    CHECK_FALSE(std::filesystem::exists(project.paths.chunk_dir({1, 1}) / "history"));
-
-    auto composite = chunkmap::ImageBuffer::load(project.paths.composite_png());
-    REQUIRE(composite.ok());
-    CHECK(composite.value().width() == 26);
-    CHECK(composite.value().height() == 18);
+    CHECK(official.value().pixel(9, 5)[0] == 20);
+    CHECK_FALSE(std::filesystem::exists(project.paths.root() / "cache"));
+    CHECK_FALSE(std::filesystem::exists(project.paths.root() / "context"));
 }
 
 TEST_CASE("chunk write records deterministic 1px normalization") {
@@ -343,17 +398,10 @@ TEST_CASE("chunk write records deterministic 1px normalization") {
     auto written = service.write_chunk_image(project, {1, 1}, short_image);
     REQUIRE(written.ok());
     CHECK(written.value().added_left + written.value().added_right == 1);
-    CHECK_FALSE(written.value().registration_applied);
     auto official = chunkmap::ImageBuffer::load(project.paths.chunk_image({1, 1}));
     REQUIRE(official.ok());
     CHECK(official.value().width() == 10);
-    auto metadata_text = chunkmap::atomic_file::read_text(
-        project.paths.chunk_metadata({1, 1}));
-    REQUIRE(metadata_text.ok());
-    const auto metadata = nlohmann::json::parse(metadata_text.value());
-    CHECK(metadata.at("registration").at("applied") == false);
-    CHECK(metadata.at("registration").at("offset_x") == 0);
-    CHECK(metadata.at("registration").at("offset_y") == 0);
+    CHECK_FALSE(std::filesystem::exists(project.paths.root() / "cache"));
 }
 
 TEST_CASE("project and atomic IO support workspace paths with spaces") {
@@ -396,4 +444,25 @@ TEST_CASE("project rejects grids that exceed the hard safety limit") {
     auto created = service.create_project(request);
     REQUIRE_FALSE(created.ok());
     CHECK(created.error().code == "grid_too_large");
+}
+
+TEST_CASE("project document bounds its lazy image cache without changing Ready state") {
+    TempWorkspace workspace;
+    chunkmap::ProjectService service(workspace.path);
+    chunkmap::CreateProjectRequest request;
+    request.name = "cache-world";
+    request.concept_image = workspace.make_image("cache-concept.png", 10, 10);
+    request.columns = 5;
+    request.rows = 5;
+    auto project = service.create_project(request);
+    REQUIRE(project.ok());
+    auto document = chunkmap::ProjectDocument::load(project.take_value());
+    REQUIRE(document.ok());
+    for (int y = 0; y < 5; ++y) {
+        for (int x = 0; x < 5; ++x) {
+            document.value().replace_image({x, y}, chunkmap::ImageBuffer(4, 4));
+        }
+    }
+    CHECK(document.value().ready_count() == 25);
+    CHECK(document.value().cached_image_count() == 16);
 }

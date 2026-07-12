@@ -1,4 +1,3 @@
-#include "image/composite_builder.h"
 #include "image/image_pipeline.h"
 
 #include <doctest/doctest.h>
@@ -70,7 +69,6 @@ chunkmap::ProjectConfig golden_config(int columns, int rows) {
     config.chunk_height = 4;
     config.horizontal_overlap_ratio = 0.25;
     config.vertical_overlap_ratio = 0.25;
-    config.feather_ratio = 0.25;
     return config;
 }
 
@@ -90,19 +88,4 @@ TEST_CASE("four-side template matches golden pixels") {
     REQUIRE(result.ok());
     check_golden(result.value(), read_golden("template_four_sides.txt"),
                  {{'R', red}, {'G', green}, {'B', blue}, {'Y', yellow}});
-}
-
-TEST_CASE("three-by-three composite matches golden pixels") {
-    const std::vector<std::pair<char, Color>> palette = {
-        {'A', {200, 20, 20, 255}}, {'B', {20, 180, 20, 255}},
-        {'C', {20, 20, 200, 255}}, {'D', {200, 120, 20, 255}},
-        {'E', {120, 20, 180, 255}}, {'F', {20, 160, 180, 255}},
-        {'G', {180, 60, 100, 255}}, {'H', {100, 160, 60, 255}},
-        {'I', {80, 80, 80, 255}},
-    };
-    std::vector<std::optional<chunkmap::ImageBuffer>> chunks;
-    for (const auto& entry : palette) chunks.emplace_back(solid(4, 4, entry.second));
-    auto result = chunkmap::CompositeBuilder::build(golden_config(3, 3), chunks);
-    REQUIRE(result.ok());
-    check_golden(result.value(), read_golden("composite_3x3.txt"), palette);
 }

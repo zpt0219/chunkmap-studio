@@ -19,8 +19,7 @@ Result<CommandType> parse_type(const std::string& name) {
              CommandType::GlobalPromptShow, CommandType::GlobalPromptSet,
              CommandType::ChunkImport, CommandType::ChunkContext, CommandType::ChunkWrite,
              CommandType::ChunkShow, CommandType::ChunkRemove,
-             CommandType::Render, CommandType::SeamInspect,
-             CommandType::MapExport}) {
+             CommandType::SeamInspect}) {
         if (command_name(type) == name) return Result<CommandType>::success(type);
     }
     return Result<CommandType>::failure("unknown_command", "Unknown command: " + name);
@@ -42,21 +41,14 @@ json changes_json(const ChangeSet& changes) {
     for (const auto coord : changes.changed_chunks) chunks.push_back(coord_value(coord));
     json prompts = json::array();
     for (const auto coord : changes.changed_prompts) prompts.push_back(coord_value(coord));
-    json seams = json::array();
-    for (const auto& seam : changes.changed_seams) {
-        seams.push_back({{"coord", coord_value(seam.coord)},
-                         {"direction", seam.direction == SeamDirection::Right ? "right" : "bottom"}});
-    }
     json contexts = json::array();
     for (const auto& path : changes.changed_contexts) contexts.push_back(path.string());
     return {
         {"project_changed", changes.project_changed},
-        {"composite_changed", changes.composite_changed},
         {"concept_changed", changes.concept_changed},
         {"global_prompt_changed", changes.global_prompt_changed},
         {"changed_chunks", chunks},
         {"changed_prompts", prompts},
-        {"changed_seams", seams},
         {"changed_contexts", contexts},
     };
 }
@@ -71,8 +63,7 @@ json encode_command_request(const CommandRequest& request) {
             payload = {{"name", value.name}, {"concept", value.concept_image.string()},
                        {"columns", value.columns}, {"rows", value.rows},
                        {"overlap_ratio", {value.horizontal_overlap_ratio,
-                                          value.vertical_overlap_ratio}},
-                       {"feather_ratio", value.feather_ratio}};
+                                          value.vertical_overlap_ratio}}};
         } else if constexpr (std::is_same_v<T, CoordPayload>) {
             payload = {{"coord", coord_value(value.coord)}};
         } else if constexpr (std::is_same_v<T, PromptSetPayload>) {
@@ -124,7 +115,6 @@ Result<CommandRequest> decode_command_request(const json& value) {
             parsed.rows = payload.at("rows").get<int>();
             parsed.horizontal_overlap_ratio = payload.at("overlap_ratio").at(0).get<double>();
             parsed.vertical_overlap_ratio = payload.at("overlap_ratio").at(1).get<double>();
-            parsed.feather_ratio = payload.at("feather_ratio").get<double>();
             request.payload = std::move(parsed);
             break;
         }
@@ -136,7 +126,6 @@ Result<CommandRequest> decode_command_request(const json& value) {
             request.payload = GlobalPromptSetPayload{payload.at("text").get<std::string>()};
             break;
         case CommandType::PromptsImport:
-        case CommandType::MapExport:
             request.payload = PathPayload{payload.at("path").get<std::string>()};
             break;
         case CommandType::ChunkImport:
@@ -161,7 +150,6 @@ Result<CommandRequest> decode_command_request(const json& value) {
         case CommandType::ProjectValidate:
         case CommandType::ConceptContext:
         case CommandType::GlobalPromptShow:
-        case CommandType::Render:
             request.payload = std::monostate{};
             break;
         }

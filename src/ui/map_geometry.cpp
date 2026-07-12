@@ -23,23 +23,11 @@ Result<MapGeometry> map_geometry(const ProjectConfig& config) {
         world_width > std::numeric_limits<int>::max() ||
         world_height > std::numeric_limits<int>::max()) {
         return Result<MapGeometry>::failure(
-            "map_dimensions_overflow", "Composite dimensions exceed the supported integer range.");
+            "map_dimensions_overflow", "Map dimensions exceed the supported integer range.");
     }
     result.world_width = static_cast<int>(world_width);
     result.world_height = static_cast<int>(world_height);
     return Result<MapGeometry>::success(result);
-}
-
-Result<bool> map_fits_texture(const ProjectConfig& config, int maximum_texture_size) {
-    if (maximum_texture_size <= 0) {
-        return Result<bool>::failure(
-            "invalid_texture_limit", "GPU texture limit must be positive.");
-    }
-    auto geometry = map_geometry(config);
-    if (!geometry) return Result<bool>::failure(geometry.error().code, geometry.error().message);
-    return Result<bool>::success(
-        geometry.value().world_width <= maximum_texture_size &&
-        geometry.value().world_height <= maximum_texture_size);
 }
 
 std::optional<ChunkCoord> topmost_chunk_at(

@@ -100,12 +100,6 @@ Result<ImageGeometry> image_geometry(const ProjectConfig& config) {
         1, *config.chunk_height - 1);
     result.step_x = *config.chunk_width - result.overlap_x;
     result.step_y = *config.chunk_height - result.overlap_y;
-    result.feather_x = std::clamp(
-        static_cast<int>(std::lround(*config.chunk_width * config.feather_ratio)),
-        0, result.overlap_x);
-    result.feather_y = std::clamp(
-        static_cast<int>(std::lround(*config.chunk_height * config.feather_ratio)),
-        0, result.overlap_y);
     return Result<ImageGeometry>::success(result);
 }
 

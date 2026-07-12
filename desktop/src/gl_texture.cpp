@@ -15,12 +15,6 @@
 
 namespace chunkmap_desktop {
 
-int maximum_texture_size() {
-    int result = 0;
-    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &result);
-    return result;
-}
-
 GlTexture::~GlTexture() {
     reset();
 }
@@ -28,6 +22,10 @@ GlTexture::~GlTexture() {
 chunkmap::Result<void> GlTexture::load(const std::filesystem::path& path) {
     auto image = chunkmap::ImageBuffer::load(path);
     if (!image) return chunkmap::Result<void>::failure(image.error().code, image.error().message);
+    return load(image.value());
+}
+
+chunkmap::Result<void> GlTexture::load(const chunkmap::ImageBuffer& image) {
     if (id_ == 0) glGenTextures(1, &id_);
     glBindTexture(GL_TEXTURE_2D, id_);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -35,11 +33,11 @@ chunkmap::Result<void> GlTexture::load(const std::filesystem::path& path) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.value().width(), image.value().height(),
-                 0, GL_RGBA, GL_UNSIGNED_BYTE, image.value().rgba().data());
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width(), image.height(),
+                 0, GL_RGBA, GL_UNSIGNED_BYTE, image.rgba().data());
     glBindTexture(GL_TEXTURE_2D, 0);
-    width_ = image.value().width();
-    height_ = image.value().height();
+    width_ = image.width();
+    height_ = image.height();
     return chunkmap::Result<void>::success();
 }
 
@@ -69,6 +67,20 @@ GlTexture* TextureCache::get(const std::filesystem::path& path) {
         last_error_.clear();
     }
     return entry.texture.get();
+}
+
+chunkmap::Result<void> TextureCache::put(const std::filesystem::path& path,
+                                         const chunkmap::ImageBuffer& image) {
+    auto texture = std::make_unique<GlTexture>();
+    auto loaded = texture->load(image);
+    if (!loaded) return loaded;
+    std::error_code error;
+    auto& entry = entries_[path];
+    entry.texture = std::move(texture);
+    entry.modified = std::filesystem::last_write_time(path, error);
+    if (error) entry.modified = {};
+    last_error_.clear();
+    return chunkmap::Result<void>::success();
 }
 
 void TextureCache::invalidate(const std::filesystem::path& path) {

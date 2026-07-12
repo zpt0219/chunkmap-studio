@@ -1,6 +1,11 @@
 # AI Chunk Map Studio: Desktop 与 CLI 用户体验设计
 
-状态：Phase 6 已实现
+状态：历史 UX 基线；持久化、渲染与 session 章节已被 schema v2 架构取代
+
+> 当前实现以 [CODE_ARCHITECTURE_DESIGN.md](./CODE_ARCHITECTURE_DESIGN.md) 和
+> [IN_MEMORY_DOCUMENT_RENDERING_PLAN.md](./IN_MEMORY_DOCUMENT_RENDERING_PLAN.md) 为准。
+> 本文仍保留早期交互决策，但其中的 Composite、cache、registration、旧目录路径和
+> render/map export 命令不再有效。
 
 实现状态：`0.6.0-phase6` 已使用共享 Command Queue / IPC 和 ChangeSet 刷新，Desktop
 必须运行，CLI 不再直接读写项目。

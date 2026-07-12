@@ -73,8 +73,6 @@ private:
     bool show_coordinates_ = true;
     bool show_seams_ = true;
     bool layout_initialized_ = false;
-    bool composite_texture_supported_ = true;
-    int maximum_texture_size_ = 0;
 
     bool show_new_project_ = false;
     bool show_project_settings_ = false;
@@ -84,17 +82,19 @@ private:
     int new_rows_ = 3;
     float new_overlap_x_ = 0.15F;
     float new_overlap_y_ = 0.15F;
-    float new_feather_ = 0.03F;
 
     int seam_direction_ = 0;
     int seam_mode_ = 0;
     std::optional<chunkmap::SeamAnalysis> seam_analysis_;
+    GlTexture seam_overlap_texture_;
+    GlTexture seam_difference_texture_;
     chunkmap::ChunkCoord seam_first_{};
     chunkmap::ChunkCoord seam_second_{};
     chunkmap::SeamDirection seam_core_direction_ = chunkmap::SeamDirection::Right;
 
     std::string status_message_;
     std::string error_message_;
+    std::optional<std::string> pending_import_request_id_;
 };
 
 }  // namespace chunkmap_desktop

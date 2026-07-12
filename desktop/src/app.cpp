@@ -248,6 +248,7 @@ void App::draw_map() {
         return ImVec2(origin.x + (x - pan_.x) * zoom_, origin.y + (y - pan_.y) * zoom_);
     };
 
+    GlTexture* concept_texture = textures_.get(project_->paths.concept_source());
     for (int y = 0; y < project_->config.rows; ++y) {
         for (int x = 0; x < project_->config.columns; ++x) {
             const chunkmap::ChunkCoord coord{x, y};
@@ -256,20 +257,21 @@ void App::draw_map() {
             const ImVec2 bottom_right = to_screen(
                 static_cast<float>(x * step_x + chunk_width),
                 static_cast<float>(y * step_y + chunk_height));
-            if (GlTexture* region = textures_.get(project_->paths.concept_region(coord))) {
-                draw->AddImage(texture_id(*region), top_left, bottom_right,
-                               ImVec2(0, 0), ImVec2(1, 1), IM_COL32(160, 178, 167, 92));
+            if (concept_texture) {
+                const ImVec2 uv0(
+                    static_cast<float>(x) / project_->config.columns,
+                    static_cast<float>(y) / project_->config.rows);
+                const ImVec2 uv1(
+                    static_cast<float>(x + 1) / project_->config.columns,
+                    static_cast<float>(y + 1) / project_->config.rows);
+                draw->AddImage(texture_id(*concept_texture), top_left, bottom_right,
+                               uv0, uv1, IM_COL32(160, 178, 167, 92));
             } else {
                 draw->AddRectFilled(top_left, bottom_right, kEmpty);
             }
         }
     }
-    if (detailed && composite_texture_supported_) {
-        if (GlTexture* composite = textures_.get(project_->paths.composite_png())) {
-            draw->AddImage(texture_id(*composite), to_screen(0, 0),
-                           to_screen(static_cast<float>(world_width), static_cast<float>(world_height)));
-        }
-    } else if (detailed) {
+    if (detailed) {
         for (int y = 0; y < project_->config.rows; ++y) {
             for (int x = 0; x < project_->config.columns; ++x) {
                 const chunkmap::ChunkCoord coord{x, y};
@@ -421,14 +423,29 @@ void App::draw_chunk_tab() {
     }
     ImGui::Spacing();
     const auto preview_path = ready ? project_->paths.chunk_image(*selected_)
-                                    : project_->paths.concept_region(*selected_);
+                                    : project_->paths.concept_source();
     if (GlTexture* preview = textures_.get(preview_path)) {
         const float width = std::max(1.0F, ImGui::GetContentRegionAvail().x);
-        const float height = std::min(260.0F, width * preview->height() / preview->width());
-        ImGui::Image(texture_id(*preview), ImVec2(width, height));
+        const float aspect = ready
+            ? static_cast<float>(preview->height()) / preview->width()
+            : static_cast<float>(project_->config.columns) / project_->config.rows;
+        const float height = std::min(260.0F, width * aspect);
+        if (ready) {
+            ImGui::Image(texture_id(*preview), ImVec2(width, height));
+        } else {
+            const ImVec2 uv0(
+                static_cast<float>(selected_->x) / project_->config.columns,
+                static_cast<float>(selected_->y) / project_->config.rows);
+            const ImVec2 uv1(
+                static_cast<float>(selected_->x + 1) / project_->config.columns,
+                static_cast<float>(selected_->y + 1) / project_->config.rows);
+            ImGui::Image(texture_id(*preview), ImVec2(width, height), uv0, uv1);
+        }
     }
     ImGui::Spacing();
+    ImGui::BeginDisabled(pending_import_request_id_.has_value());
     if (ImGui::Button(ready ? "Replace Image" : "Import Image")) import_image();
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ready) {
         if (ImGui::Button("Reveal Image File")) {
@@ -485,8 +502,9 @@ void App::draw_seam_tab() {
         }
         ImGui::EndCombo();
     }
-    const char* modes[] = {"Composite", "Raw", "Difference", "Overlap"};
-    for (int index = 0; index < 4; ++index) {
+    const char* modes[] = {"Raw", "Difference", "Overlap"};
+    seam_mode_ = std::clamp(seam_mode_, 0, 2);
+    for (int index = 0; index < 3; ++index) {
         if (index > 0) ImGui::SameLine();
         ImGui::RadioButton(modes[index], &seam_mode_, index);
     }
@@ -497,16 +515,11 @@ void App::draw_seam_tab() {
     }
     ImGui::Separator();
     ImGui::Text("Overlap  %d px", seam_analysis_->overlap_pixels);
-    ImGui::Text("Feather  %d px", seam_analysis_->feather_pixels);
     ImGui::Text("Mean RGB difference  %.2f", seam_analysis_->mean_absolute_rgb_difference);
     ImGui::Spacing();
 
     const float width = std::max(1.0F, ImGui::GetContentRegionAvail().x);
     if (seam_mode_ == 0) {
-        if (GlTexture* texture = textures_.get(project_->paths.composite_png())) {
-            ImGui::Image(texture_id(*texture), ImVec2(width, width * texture->height() / texture->width()));
-        }
-    } else if (seam_mode_ == 1) {
         GlTexture* first = textures_.get(project_->paths.chunk_image(seam_first_));
         GlTexture* second = textures_.get(project_->paths.chunk_image(seam_second_));
         if (first && second) {
@@ -516,12 +529,9 @@ void App::draw_seam_tab() {
             ImGui::Image(texture_id(*second), ImVec2(half, half * second->height() / second->width()));
         }
     } else {
-        const std::string direction = seam_core_direction_ == chunkmap::SeamDirection::Right
-            ? "right" : "bottom";
-        const auto directory = project_->paths.seam_dir(seam_first_, direction);
-        const auto path = directory / (seam_mode_ == 2 ? "difference.png" : "overlap.png");
-        if (GlTexture* texture = textures_.get(path)) {
-            ImGui::Image(texture_id(*texture), ImVec2(width, width * texture->height() / texture->width()));
+        GlTexture& texture = seam_mode_ == 1 ? seam_difference_texture_ : seam_overlap_texture_;
+        if (texture.id() != 0) {
+            ImGui::Image(texture_id(texture), ImVec2(width, width * texture.height() / texture.width()));
         }
     }
 }
@@ -548,7 +558,6 @@ void App::draw_new_project_modal() {
     ImGui::InputInt("Rows", &new_rows_);
     ImGui::SliderFloat("Horizontal overlap", &new_overlap_x_, 0.01F, 0.49F, "%.2f");
     ImGui::SliderFloat("Vertical overlap", &new_overlap_y_, 0.01F, 0.49F, "%.2f");
-    ImGui::SliderFloat("Feather", &new_feather_, 0.0F, 0.20F, "%.2f");
     ImGui::Separator();
     const bool valid = !new_project_name_.empty() && !new_concept_path_.empty() &&
                        new_columns_ > 0 && new_rows_ > 0;
@@ -558,7 +567,7 @@ void App::draw_new_project_modal() {
         request.project_name = new_project_name_;
         request.payload = chunkmap::ProjectCreatePayload{
             new_project_name_, std::filesystem::absolute(new_concept_path_).lexically_normal(),
-            new_columns_, new_rows_, new_overlap_x_, new_overlap_y_, new_feather_};
+            new_columns_, new_rows_, new_overlap_x_, new_overlap_y_};
         auto created = command_host_.submit_and_wait(std::move(request));
         if (created && created.value().project_snapshot) {
             apply_project_snapshot(*created.value().project_snapshot, true);
@@ -592,17 +601,11 @@ void App::draw_project_settings_modal() {
         ImGui::Text("Grid  %d x %d", project_->config.columns, project_->config.rows);
         ImGui::Text("Overlap  %.2f x %.2f", project_->config.horizontal_overlap_ratio,
                     project_->config.vertical_overlap_ratio);
-        ImGui::Text("Feather  %.2f", project_->config.feather_ratio);
         if (project_->config.has_chunk_size()) {
             auto geometry = chunkmap::map_geometry(project_->config);
             ImGui::Text("Chunk  %d x %d", *project_->config.chunk_width, *project_->config.chunk_height);
-            if (geometry) ImGui::Text("Composite  %d x %d", geometry.value().world_width,
+            if (geometry) ImGui::Text("Map extent  %d x %d", geometry.value().world_width,
                                       geometry.value().world_height);
-            ImGui::Text("GPU texture limit  %d px", maximum_texture_size_);
-            if (!composite_texture_supported_) {
-                ImGui::TextColored(ImVec4(0.94F, 0.71F, 0.28F, 1.0F),
-                    "Composite exceeds the GPU limit; drawing individual chunks.");
-            }
         } else {
             ImGui::TextDisabled("Chunk size  Waiting for imported image");
         }
@@ -670,15 +673,7 @@ void App::apply_project_snapshot(chunkmap::Project project, bool reset_selection
     seam_analysis_.reset();
     textures_.clear();
     fit_requested_ = true;
-    maximum_texture_size_ = maximum_texture_size();
-    composite_texture_supported_ = true;
-    if (project_->config.has_chunk_size()) {
-        auto fits = chunkmap::map_fits_texture(project_->config, maximum_texture_size_);
-        composite_texture_supported_ = fits && fits.value();
-    }
-    status_message_ = composite_texture_supported_
-        ? "Project opened"
-        : "Composite exceeds GPU texture limit; drawing chunks separately";
+    status_message_ = "Project opened";
     error_message_.clear();
     load_global_prompt();
     if (previous_selection && project_->config.contains(*previous_selection)) {
@@ -699,9 +694,7 @@ void App::reload_project() {
         return;
     }
     apply_project_snapshot(*loaded.value().project_snapshot, false);
-    status_message_ = composite_texture_supported_
-        ? "Reloaded"
-        : "Composite exceeds GPU texture limit; drawing chunks separately";
+    status_message_ = "Reloaded";
     error_message_.clear();
 }
 
@@ -826,24 +819,9 @@ void App::import_image() {
     auto request = make_request(chunkmap::CommandType::ChunkImport);
     request.payload = chunkmap::ChunkImagePayload{
         *selected_, std::filesystem::absolute(path).lexically_normal()};
-    auto imported = command_host_.submit_and_wait(std::move(request));
-    if (!imported) {
-        error_message_ = imported.error().message;
-        return;
-    }
-    if (imported.value().project_snapshot) {
-        apply_project_snapshot(*imported.value().project_snapshot, false);
-        fit_requested_ = true;
-    } else {
-        textures_.invalidate(project_->paths.chunk_image(*selected_));
-        textures_.invalidate(project_->paths.composite_png());
-        seam_analysis_.reset();
-    }
-    status_message_ = "Chunk image imported";
-    if (imported.value().data.contains("global_prompt_action")) {
-        status_message_ =
-            "First image imported. Ask Codex to create the project Global Prompt from it.";
-    }
+    pending_import_request_id_ = request.request_id;
+    command_host_.submit(std::move(request));
+    status_message_ = "Importing chunk image...";
     error_message_.clear();
 }
 
@@ -895,6 +873,8 @@ void App::refresh_seam() {
     auto result = command_host_.submit_and_wait(std::move(request));
     if (result && result.value().seam_analysis) {
         seam_analysis_ = *result.value().seam_analysis;
+        seam_overlap_texture_.load(seam_analysis_->overlap_preview);
+        seam_difference_texture_.load(seam_analysis_->difference_preview);
         error_message_.clear();
     } else {
         seam_analysis_.reset();
@@ -913,7 +893,10 @@ chunkmap::CommandRequest App::make_request(chunkmap::CommandType type) const {
 
 void App::poll_commands() {
     for (auto& completion : command_host_.take_completions()) {
-        if (completion.request.request_id.rfind("desktop-", 0) == 0) continue;
+        const bool pending_import = pending_import_request_id_ &&
+            completion.request.request_id == *pending_import_request_id_;
+        if (completion.request.request_id.rfind("desktop-", 0) == 0 && !pending_import) continue;
+        if (pending_import) pending_import_request_id_.reset();
         if (!completion.result) {
             error_message_ = completion.result.error().message;
             continue;
@@ -934,14 +917,18 @@ void App::poll_commands() {
             apply_project_snapshot(*result.project_snapshot, false);
         }
         for (const auto coord : result.changes.changed_chunks) {
-            textures_.invalidate(project_->paths.chunk_image(coord));
+            const auto path = project_->paths.chunk_image(coord);
+            if (result.changed_chunk_image && result.changes.changed_chunks.size() == 1U) {
+                auto uploaded = textures_.put(path, *result.changed_chunk_image);
+                if (!uploaded) error_message_ = uploaded.error().message;
+            } else {
+                textures_.invalidate(path);
+            }
         }
-        if (result.changes.composite_changed) {
-            textures_.invalidate(project_->paths.composite_png());
-        }
-        if (!result.changes.changed_chunks.empty() ||
-            !result.changes.changed_seams.empty()) {
+        if (!result.changes.changed_chunks.empty()) {
             seam_analysis_.reset();
+            seam_overlap_texture_.reset();
+            seam_difference_texture_.reset();
         }
         if (selected_ && std::find(result.changes.changed_prompts.begin(),
                                    result.changes.changed_prompts.end(), *selected_) !=
@@ -955,7 +942,13 @@ void App::poll_commands() {
             }
         }
         if (result.changes.global_prompt_changed) load_global_prompt();
-        status_message_ = "CLI command applied";
+        if (pending_import) {
+            status_message_ = result.data.contains("global_prompt_action")
+                ? "First image imported. Ask Codex to create the project Global Prompt from it."
+                : "Chunk image imported";
+        } else {
+            status_message_ = "CLI command applied";
+        }
         error_message_.clear();
     }
 }

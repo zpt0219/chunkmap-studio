@@ -2,6 +2,7 @@
 
 #include "core/result.h"
 #include "image/seam_analyzer.h"
+#include "image/image_pipeline.h"
 #include "model/project.h"
 #include "project/project_repository.h"
 
@@ -19,7 +20,6 @@ struct CreateProjectRequest {
     int rows = 0;
     double horizontal_overlap_ratio = 0.15;
     double vertical_overlap_ratio = 0.15;
-    double feather_ratio = 0.03;
 };
 
 struct ProjectStatus {
@@ -50,16 +50,10 @@ struct ChunkContext {
 
 struct ChunkWriteResult {
     std::filesystem::path image;
-    std::filesystem::path composite;
     int added_left = 0;
     int added_top = 0;
     int added_right = 0;
     int added_bottom = 0;
-    int registration_x = 0;
-    int registration_y = 0;
-    double registration_score_before = 0.0;
-    double registration_score_after = 0.0;
-    bool registration_applied = false;
 };
 
 class ProjectService {
@@ -73,6 +67,9 @@ public:
 
     Result<ChunkWriteResult> import_chunk_image(
         Project& project, ChunkCoord coord, const std::filesystem::path& image_path);
+    Result<ChunkWriteResult> import_chunk_image(
+        Project& project, ChunkCoord coord, const std::filesystem::path& image_path,
+        const NeighborImages& neighbors);
     Result<std::string> read_prompt(const Project& project, ChunkCoord coord) const;
     Result<void> write_prompt(const Project& project,
                               ChunkCoord coord,
@@ -83,23 +80,28 @@ public:
     Result<void> write_global_prompt(const Project& project, std::string_view text) const;
     Result<ConceptContext> export_concept_context(const Project& project) const;
     Result<ChunkContext> export_chunk_context(const Project& project, ChunkCoord coord) const;
+    Result<ChunkContext> export_chunk_context(
+        const Project& project, ChunkCoord coord, const NeighborImages& neighbors,
+        std::string_view global_prompt, std::string_view chunk_prompt) const;
     Result<ChunkWriteResult> write_chunk_image(
         Project& project, ChunkCoord coord, const std::filesystem::path& image_path);
+    Result<ChunkWriteResult> write_chunk_image(
+        Project& project, ChunkCoord coord, const std::filesystem::path& image_path,
+        const NeighborImages& neighbors);
     Result<void> remove_chunk_image(const Project& project, ChunkCoord coord) const;
-    Result<std::filesystem::path> rebuild_composite(const Project& project) const;
     Result<SeamAnalysis> inspect_seam(
         const Project& project, ChunkCoord coord, SeamDirection direction) const;
 
 private:
     Result<void> validate_config(const ProjectConfig& config) const;
     Result<void> validate_coord(const Project& project, ChunkCoord coord) const;
-    Result<void> slice_concept(const Project& project) const;
     Result<ChunkWriteResult> store_chunk_image(
         Project& project,
         ChunkCoord coord,
         const std::filesystem::path& image_path,
         bool allow_size_initialization,
-        bool require_ready_neighbor);
+        bool require_ready_neighbor,
+        const NeighborImages* supplied_neighbors = nullptr);
 
     ProjectRepository repository_;
 };

@@ -20,27 +20,22 @@ json chunk_size_json(const ProjectConfig& config) {
 json encode_config(const ProjectConfig& config) {
     return json{
         {"schema_version", config.schema_version},
-        {"name", config.name},
         {"columns", config.columns},
         {"rows", config.rows},
-        {"concept_file", config.concept_file},
         {"chunk_size", chunk_size_json(config)},
         {"overlap_ratio", json::array({
             config.horizontal_overlap_ratio,
             config.vertical_overlap_ratio})},
-        {"feather_ratio", config.feather_ratio},
     };
 }
 
-Result<ProjectConfig> decode_config(const json& value) {
+Result<ProjectConfig> decode_config(const json& value, const std::string& project_name) {
     try {
         ProjectConfig config;
         config.schema_version = value.at("schema_version").get<int>();
-        config.name = value.at("name").get<std::string>();
+        config.name = project_name;
         config.columns = value.at("columns").get<int>();
         config.rows = value.at("rows").get<int>();
-        config.concept_file = value.value("concept_file", "concept/source.png");
-        config.feather_ratio = value.at("feather_ratio").get<double>();
 
         const auto& overlap = value.at("overlap_ratio");
         if (!overlap.is_array() || overlap.size() != 2U) {
@@ -67,6 +62,75 @@ Result<ProjectConfig> decode_config(const json& value) {
     }
 }
 
+Result<void> migrate_v1(const json& value, const ProjectPaths& paths) {
+    try {
+        const auto old_root = paths.root();
+        auto copy = [](const std::filesystem::path& source,
+                       const std::filesystem::path& destination) -> Result<void> {
+            auto bytes = atomic_file::read_binary(source);
+            if (!bytes) return Result<void>::failure(bytes.error().code, bytes.error().message);
+            return atomic_file::write_binary(destination, bytes.value());
+        };
+        auto concept = copy(old_root / "concept" / "source.png", paths.concept_source());
+        if (!concept) return concept;
+
+        const int columns = value.at("columns").get<int>();
+        const int rows = value.at("rows").get<int>();
+        for (int y = 0; y < rows; ++y) {
+            for (int x = 0; x < columns; ++x) {
+                const ChunkCoord coord{x, y};
+                const auto old_dir = old_root / "chunks" / coord_name(coord);
+                std::error_code error;
+                if (std::filesystem::is_regular_file(old_dir / "image.png", error) && !error) {
+                    auto image = copy(old_dir / "image.png", paths.chunk_image(coord));
+                    if (!image) return image;
+                }
+                auto prompt = atomic_file::read_text(old_dir / "prompt.md");
+                if (prompt && !prompt.value().empty()) {
+                    auto written = atomic_file::write_text(paths.chunk_prompt(coord), prompt.value());
+                    if (!written) return written;
+                }
+            }
+        }
+
+        auto global = atomic_file::read_text(paths.global_prompt());
+        if (global && global.value().empty()) {
+            std::error_code error;
+            std::filesystem::remove(paths.global_prompt(), error);
+        }
+
+        ProjectConfig config;
+        config.schema_version = 2;
+        config.name = paths.project_name();
+        config.columns = columns;
+        config.rows = rows;
+        const auto& overlap = value.at("overlap_ratio");
+        config.horizontal_overlap_ratio = overlap.at(0).get<double>();
+        config.vertical_overlap_ratio = overlap.at(1).get<double>();
+        const auto& size = value.at("chunk_size");
+        if (!size.is_null()) {
+            config.chunk_width = size.at(0).get<int>();
+            config.chunk_height = size.at(1).get<int>();
+        }
+        auto saved = atomic_file::write_text(paths.project_json(), encode_config(config).dump(2) + '\n');
+        if (!saved) return saved;
+
+        std::error_code error;
+        std::filesystem::remove_all(old_root / "concept", error);
+        std::filesystem::remove_all(old_root / "context", error);
+        std::filesystem::remove_all(old_root / "cache", error);
+        for (int y = 0; y < rows; ++y) {
+            for (int x = 0; x < columns; ++x) {
+                std::filesystem::remove_all(
+                    old_root / "chunks" / coord_name({x, y}), error);
+            }
+        }
+        return Result<void>::success();
+    } catch (const std::exception& exception) {
+        return Result<void>::failure("migration_failed", exception.what());
+    }
+}
+
 }  // namespace
 
 ProjectRepository::ProjectRepository(std::filesystem::path workspace_root)
@@ -83,12 +147,17 @@ Result<Project> ProjectRepository::load(const std::string& project_name) const {
 
     try {
         auto parsed = nlohmann::json::parse(content.value());
-        auto config = decode_config(parsed);
-        if (!config) return Result<Project>::failure(config.error().code, config.error().message);
-        if (config.value().name != project_name) {
-            return Result<Project>::failure(
-                "project_name_mismatch", "project.json name does not match its output directory.");
+        if (parsed.at("schema_version").get<int>() == 1) {
+            auto migrated = migrate_v1(parsed, paths);
+            if (!migrated) return Result<Project>::failure(
+                migrated.error().code, migrated.error().message);
+            auto migrated_content = atomic_file::read_text(paths.project_json());
+            if (!migrated_content) return Result<Project>::failure(
+                migrated_content.error().code, migrated_content.error().message);
+            parsed = nlohmann::json::parse(migrated_content.value());
         }
+        auto config = decode_config(parsed, project_name);
+        if (!config) return Result<Project>::failure(config.error().code, config.error().message);
         return Result<Project>::success(Project{config.take_value(), std::move(paths)});
     } catch (const std::exception& exception) {
         return Result<Project>::failure(

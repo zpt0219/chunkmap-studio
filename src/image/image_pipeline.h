@@ -16,8 +16,6 @@ struct ImageGeometry {
     int overlap_y = 0;
     int step_x = 0;
     int step_y = 0;
-    int feather_x = 0;
-    int feather_y = 0;
 };
 
 struct NeighborImages {

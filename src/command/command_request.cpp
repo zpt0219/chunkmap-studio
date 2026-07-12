@@ -19,9 +19,7 @@ std::string command_name(CommandType type) {
     case CommandType::ChunkWrite: return "chunk write";
     case CommandType::ChunkShow: return "chunk show";
     case CommandType::ChunkRemove: return "chunk remove";
-    case CommandType::Render: return "render";
     case CommandType::SeamInspect: return "seam inspect";
-    case CommandType::MapExport: return "map export";
     }
     return "unknown";
 }

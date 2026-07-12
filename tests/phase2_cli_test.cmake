@@ -45,17 +45,23 @@ run_chunkmap(--project cli-world project validate)
 set(project_root "${WORKSPACE}/output/cli-world")
 foreach(required_file
         "project.json"
-        "concept/source.png"
-        "chunks/0_0/prompt.md"
-        "chunks/0_0/image.png"
-        "chunks/1_0/prompt.md"
-        "chunks/1_1/image.png")
+        "concept.png"
+        "prompts/0_0.md"
+        "chunks/0_0.png"
+        "prompts/1_0.md"
+        "chunks/1_1.png")
     if(NOT EXISTS "${project_root}/${required_file}")
         message(FATAL_ERROR "Expected file missing: ${project_root}/${required_file}")
     endif()
 endforeach()
 
-file(READ "${project_root}/chunks/0_0/prompt.md" prompt_0_0)
+file(READ "${project_root}/prompts/0_0.md" prompt_0_0)
 if(NOT prompt_0_0 STREQUAL "AI overwrite")
     message(FATAL_ERROR "Prompt overwrite failed: ${prompt_0_0}")
 endif()
+
+foreach(forbidden_path "cache" "context" "concept" "chunks/0_0")
+    if(EXISTS "${project_root}/${forbidden_path}")
+        message(FATAL_ERROR "Derived project path must not exist: ${project_root}/${forbidden_path}")
+    endif()
+endforeach()

@@ -24,15 +24,15 @@ add_library(chunkmap_core STATIC
     command/command_result.cpp
     command/document_command_queue.cpp
     core/version.cpp
-    image/composite_builder.cpp
     image/image_buffer.cpp
     image/image_pipeline.cpp
-    image/image_registration.cpp
     image/seam_analyzer.cpp
     ipc/desktop_ipc.cpp
     io/atomic_file.cpp
+    model/project_document.cpp
     project/project_paths.cpp
     project/project_repository.cpp
+    project/project_session.cpp
     project/project_service.cpp
     ui/map_geometry.cpp
 )
