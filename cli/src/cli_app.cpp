@@ -145,6 +145,14 @@ int CliApp::run_project() {
         request.payload = std::move(payload);
         return execute(std::move(request));
     }
+    if (action == "open") {
+        if (command_line_.args.size() != 3U) {
+            return usage_error("project open requires exactly one project name.");
+        }
+        auto request = make_request(chunkmap::CommandType::ProjectOpen);
+        request.project_name = command_line_.args[2];
+        return execute(std::move(request));
+    }
     if (action != "status" && action != "validate") {
         return usage_error("Unknown project subcommand: " + action);
     }
@@ -334,7 +342,7 @@ void CliApp::print_help() const {
         << "  --workspace <path>\n  --project <name>\n  --json\n\n"
         << "Commands:\n"
         << "  project init <name> --concept <image> --columns <n> --rows <n>\n"
-        << "  project status\n  project validate\n"
+        << "  project open <name>\n  project status\n  project validate\n"
         << "  prompt show <x,y>\n  prompt set <x,y> --file <path>\n"
         << "  prompts import --input <json>\n  concept context\n"
         << "  global-prompt show\n  global-prompt set --file <path>\n"

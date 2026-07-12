@@ -24,6 +24,8 @@ run_chunkmap(
     --rows 2
 )
 
+run_chunkmap(--json project open cli-world)
+
 run_chunkmap(--project cli-world --json chunk import 1,1 --image "${CONCEPT}")
 run_chunkmap(--project cli-world --json chunk import 0,0 --image "${CONCEPT}")
 

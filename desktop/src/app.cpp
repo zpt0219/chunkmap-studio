@@ -908,6 +908,12 @@ void App::poll_commands() {
             status_message_ = "CLI project created";
             continue;
         }
+        if (completion.request.type == chunkmap::CommandType::ProjectOpen &&
+            result.project_snapshot) {
+            apply_project_snapshot(*result.project_snapshot, true);
+            status_message_ = "CLI project opened";
+            continue;
+        }
         if (!project_ || !result.changes.project ||
             !(result.changes.project.value() ==
               chunkmap::make_project_key(workspace_, project_->config.name))) {

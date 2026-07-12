@@ -31,6 +31,12 @@ Create a project under `output/my-world/`:
   --rows 3
 ```
 
+Switch a running Desktop instance to an existing project:
+
+```bash
+./build/cli/chunkmap --workspace "$PWD" project open my-world
+```
+
 Import a user image into any chunk. The first imported image determines the
 project chunk size; later imports use the same validation and deterministic
 1px edge normalization as generated images:

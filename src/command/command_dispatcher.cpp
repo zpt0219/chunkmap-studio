@@ -144,6 +144,7 @@ Result<CommandResult> CommandDispatcher::execute(const CommandRequest& request) 
                            {"path", project.paths.root().string()}};
             result.text = "Opened project " + project_name;
             result.project_snapshot = project;
+            result.changes.project_changed = true;
             break;
 
         case CommandType::ProjectStatus: {

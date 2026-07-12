@@ -126,6 +126,32 @@ TEST_CASE("document command queue executes one FIFO write path") {
     std::filesystem::remove_all(workspace, error);
 }
 
+TEST_CASE("project open publishes a full project switch") {
+    const auto workspace = std::filesystem::temp_directory_path() /
+        "chunkmap-project-open";
+    std::error_code error;
+    std::filesystem::remove_all(workspace, error);
+
+    chunkmap::DocumentCommandQueue queue;
+    auto create = request(chunkmap::CommandType::ProjectCreate, workspace, "open-1", "world");
+    create.payload = chunkmap::ProjectCreatePayload{
+        "world", std::filesystem::path(CHUNKMAP_TEST_SOURCE_DIR) / "fixtures/chunk.png",
+        2, 2, 0.15, 0.15};
+    REQUIRE(queue.submit(std::move(create)).get());
+
+    auto open = request(chunkmap::CommandType::ProjectOpen, workspace, "open-2", "world");
+    auto opened = queue.submit(std::move(open)).get();
+    REQUIRE(opened);
+    REQUIRE(opened.value().project_snapshot.has_value());
+    CHECK(opened.value().project_snapshot->config.name == "world");
+    CHECK(opened.value().changes.project_changed);
+    REQUIRE(opened.value().changes.project.has_value());
+    CHECK(opened.value().changes.project->project_name == "world");
+
+    queue.stop_and_drain();
+    std::filesystem::remove_all(workspace, error);
+}
+
 TEST_CASE("document reads stay in memory until explicit project reload") {
     const auto workspace = std::filesystem::temp_directory_path() /
         "chunkmap-session-memory";

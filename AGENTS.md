@@ -42,6 +42,12 @@ Use explicit workspace and JSON output when an agent invokes the CLI:
   --project <project-name> --json project status
 ```
 
+Open an existing project in the running Desktop host with:
+
+```bash
+./build/cli/chunkmap --workspace "$PWD" project open <project-name>
+```
+
 ## Project And Prompt Workflow
 
 Create a project when the user asks for a new map:
