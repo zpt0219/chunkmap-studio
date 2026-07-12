@@ -42,6 +42,8 @@ struct ChunkContext {
     std::filesystem::path manifest;
     std::filesystem::path template_image;
     std::filesystem::path mask_image;
+    std::filesystem::path global_prompt;
+    std::filesystem::path chunk_prompt;
     std::filesystem::path prompt;
     std::vector<std::string> ready_directions;
 };
@@ -77,6 +79,8 @@ public:
                               std::string_view text) const;
     Result<void> import_prompts(const Project& project,
                                 const std::filesystem::path& json_path) const;
+    Result<std::string> read_global_prompt(const Project& project) const;
+    Result<void> write_global_prompt(const Project& project, std::string_view text) const;
     Result<ConceptContext> export_concept_context(const Project& project) const;
     Result<ChunkContext> export_chunk_context(const Project& project, ChunkCoord coord) const;
     Result<ChunkWriteResult> write_chunk_image(

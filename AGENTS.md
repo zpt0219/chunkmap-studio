@@ -95,6 +95,19 @@ Import one or more user-provided map anchors:
   chunk import <x,y> --image /absolute/path/to/image.png
 ```
 
+The first successful import returns a `global_prompt_action`. When an agent sees
+it, inspect the returned formal `seed_image`, write a project-wide visual style
+description that does not repeat the chunk's local layout, and import it with:
+
+```bash
+./build/cli/chunkmap --workspace "$PWD" --project <project-name> \
+  global-prompt set --file /absolute/path/to/global-prompt.md
+```
+
+The first image is only an implicit initialization reference. Do not add Seed
+identity or provenance to the project. Users may inspect and edit the resulting
+Global Prompt directly.
+
 ## Generate A Chunk With Codex
 
 For a requested target coordinate:
@@ -110,7 +123,9 @@ For a requested target coordinate:
 3. Read the returned `manifest.json`, `prompt.txt`, `template.png`, and `mask.png`.
    `template.png` contains opaque neighbor overlap pixels and a transparent area
    to create. `mask.png` uses white for generation and black for protected pixels.
-   The generated file must use the manifest `expected_size`.
+   The context also keeps `global_prompt.txt` and `chunk_prompt.txt` as separate
+   sources; `prompt.txt` is their generation-ready combination. The generated
+   file must use the manifest `expected_size`.
 4. Use the image-generation capability available through the user's Codex
    subscription. Do not add or request an API key unless the user explicitly asks
    for an API integration. Preserve the protected neighbor pixels exactly and

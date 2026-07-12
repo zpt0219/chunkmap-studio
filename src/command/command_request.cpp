@@ -12,6 +12,8 @@ std::string command_name(CommandType type) {
     case CommandType::PromptsImport: return "prompts import";
     case CommandType::PromptShow: return "prompt show";
     case CommandType::PromptSet: return "prompt set";
+    case CommandType::GlobalPromptShow: return "global-prompt show";
+    case CommandType::GlobalPromptSet: return "global-prompt set";
     case CommandType::ChunkImport: return "chunk import";
     case CommandType::ChunkContext: return "chunk context";
     case CommandType::ChunkWrite: return "chunk write";

@@ -51,6 +51,13 @@ std::string prompt_text(const json& item) {
     return {};
 }
 
+std::string combined_prompt(std::string_view global, std::string_view chunk) {
+    if (global.empty()) return std::string(chunk);
+    if (chunk.empty()) return std::string(global);
+    return "[GLOBAL VISUAL STYLE]\n" + std::string(global) +
+           "\n\n[CHUNK CONTENT]\n" + std::string(chunk);
+}
+
 Result<NeighborImages> load_neighbors(const Project& project, ChunkCoord coord) {
     NeighborImages result;
     auto load = [&](ChunkCoord neighbor, std::optional<ImageBuffer>& destination) -> Result<void> {
@@ -165,6 +172,13 @@ Result<Project> ProjectService::create_project(const CreateProjectRequest& reque
         return Result<Project>::failure(concept_saved.error().code, concept_saved.error().message);
     }
 
+    auto global_prompt_saved = atomic_file::write_text(paths.global_prompt(), {});
+    if (!global_prompt_saved) {
+        std::filesystem::remove_all(paths.root(), error);
+        return Result<Project>::failure(
+            global_prompt_saved.error().code, global_prompt_saved.error().message);
+    }
+
     for (int y = 0; y < config.rows; ++y) {
         for (int x = 0; x < config.columns; ++x) {
             const ChunkCoord coord{x, y};
@@ -272,6 +286,19 @@ Result<void> ProjectService::write_prompt(const Project& project,
     auto coord_result = validate_coord(project, coord);
     if (!coord_result) return coord_result;
     return atomic_file::write_text(project.paths.chunk_prompt(coord), text);
+}
+
+Result<std::string> ProjectService::read_global_prompt(const Project& project) const {
+    std::error_code error;
+    if (!std::filesystem::exists(project.paths.global_prompt(), error) && !error) {
+        return Result<std::string>::success({});
+    }
+    return atomic_file::read_text(project.paths.global_prompt());
+}
+
+Result<void> ProjectService::write_global_prompt(const Project& project,
+                                                 std::string_view text) const {
+    return atomic_file::write_text(project.paths.global_prompt(), text);
 }
 
 Result<void> ProjectService::import_prompts(const Project& project,
@@ -400,6 +427,9 @@ Result<ChunkContext> ProjectService::export_chunk_context(
     auto prompt_text_result = read_prompt(project, coord);
     if (!prompt_text_result) return Result<ChunkContext>::failure(
         prompt_text_result.error().code, prompt_text_result.error().message);
+    auto global_prompt_result = read_global_prompt(project);
+    if (!global_prompt_result) return Result<ChunkContext>::failure(
+        global_prompt_result.error().code, global_prompt_result.error().message);
 
     std::error_code error;
     const auto directory = project.paths.chunk_context_dir(coord);
@@ -412,6 +442,8 @@ Result<ChunkContext> ProjectService::export_chunk_context(
     context.manifest = directory / "manifest.json";
     context.template_image = directory / "template.png";
     context.mask_image = directory / "mask.png";
+    context.global_prompt = directory / "global_prompt.txt";
+    context.chunk_prompt = directory / "chunk_prompt.txt";
     context.prompt = directory / "prompt.txt";
     json neighbor_entries = json::array();
     auto add_neighbor = [&](const char* direction, ChunkCoord neighbor, const auto& image) {
@@ -435,6 +467,8 @@ Result<ChunkContext> ProjectService::export_chunk_context(
         {"template", context.template_image.string()},
         {"mask", context.mask_image.string()},
         {"mask_convention", "white_generate_black_protect"},
+        {"global_prompt", context.global_prompt.string()},
+        {"chunk_prompt", context.chunk_prompt.string()},
         {"prompt", context.prompt.string()},
         {"ready_neighbors", neighbor_entries},
         {"write_command", "chunkmap --project " + project.config.name + " chunk write " +
@@ -457,7 +491,16 @@ Result<ChunkContext> ProjectService::export_chunk_context(
     auto mask_saved = mask.save_png(context.mask_image);
     if (!mask_saved) return Result<ChunkContext>::failure(
         mask_saved.error().code, mask_saved.error().message);
-    auto prompt_saved = atomic_file::write_text(context.prompt, prompt_text_result.value());
+    auto global_prompt_saved = atomic_file::write_text(
+        context.global_prompt, global_prompt_result.value());
+    if (!global_prompt_saved) return Result<ChunkContext>::failure(
+        global_prompt_saved.error().code, global_prompt_saved.error().message);
+    auto chunk_prompt_saved = atomic_file::write_text(
+        context.chunk_prompt, prompt_text_result.value());
+    if (!chunk_prompt_saved) return Result<ChunkContext>::failure(
+        chunk_prompt_saved.error().code, chunk_prompt_saved.error().message);
+    auto prompt_saved = atomic_file::write_text(
+        context.prompt, combined_prompt(global_prompt_result.value(), prompt_text_result.value()));
     if (!prompt_saved) return Result<ChunkContext>::failure(
         prompt_saved.error().code, prompt_saved.error().message);
     auto manifest_saved = atomic_file::write_text(context.manifest, manifest.dump(2) + '\n');

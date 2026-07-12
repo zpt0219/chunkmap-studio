@@ -21,6 +21,7 @@ private:
     int run_project();
     int run_prompt();
     int run_prompts();
+    int run_global_prompt();
     int run_concept();
     int run_chunk();
     int run_render();

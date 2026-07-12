@@ -18,6 +18,8 @@ enum class CommandType {
     PromptsImport,
     PromptShow,
     PromptSet,
+    GlobalPromptShow,
+    GlobalPromptSet,
     ChunkImport,
     ChunkContext,
     ChunkWrite,
@@ -47,6 +49,10 @@ struct PromptSetPayload {
     std::string text;
 };
 
+struct GlobalPromptSetPayload {
+    std::string text;
+};
+
 struct PathPayload {
     std::filesystem::path path;
 };
@@ -71,6 +77,7 @@ using CommandPayload = std::variant<
     ProjectCreatePayload,
     CoordPayload,
     PromptSetPayload,
+    GlobalPromptSetPayload,
     PathPayload,
     ChunkImagePayload,
     SeamInspectPayload>;

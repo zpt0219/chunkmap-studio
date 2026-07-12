@@ -25,6 +25,7 @@ ProjectPaths::ProjectPaths(std::filesystem::path workspace_root, std::string pro
       project_name_(std::move(project_name)) {}
 
 std::filesystem::path ProjectPaths::project_json() const { return project_root_ / "project.json"; }
+std::filesystem::path ProjectPaths::global_prompt() const { return project_root_ / "global_prompt.md"; }
 std::filesystem::path ProjectPaths::concept_dir() const { return project_root_ / "concept"; }
 std::filesystem::path ProjectPaths::concept_source() const { return concept_dir() / "source.png"; }
 std::filesystem::path ProjectPaths::concept_regions_dir() const { return concept_dir() / "regions"; }

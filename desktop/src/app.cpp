@@ -91,6 +91,7 @@ App::App(std::filesystem::path workspace, std::optional<std::string> initial_pro
 
 App::~App() {
     flush_prompt();
+    flush_global_prompt();
     textures_.clear();
 }
 
@@ -103,6 +104,9 @@ void App::draw() {
     draw_new_project_modal();
     draw_project_settings_modal();
     if (prompt_dirty_ && ImGui::GetTime() - prompt_last_edit_ >= 0.5) flush_prompt();
+    if (global_prompt_dirty_ && ImGui::GetTime() - global_prompt_last_edit_ >= 0.5) {
+        flush_global_prompt();
+    }
 }
 
 void App::draw_dockspace() {
@@ -602,6 +606,19 @@ void App::draw_project_settings_modal() {
         } else {
             ImGui::TextDisabled("Chunk size  Waiting for imported image");
         }
+        ImGui::SeparatorText("Global Prompt");
+        ImGui::TextDisabled("Project-wide visual style applied to every chunk context.");
+        if (ImGui::InputTextMultiline(
+                "##global_prompt_editor", &global_prompt_buffer_, ImVec2(520.0F, 220.0F),
+                ImGuiInputTextFlags_AllowTabInput)) {
+            global_prompt_dirty_ = true;
+            global_prompt_last_edit_ = ImGui::GetTime();
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) flush_global_prompt();
+        if (global_prompt_buffer_.empty()) {
+            ImGui::TextDisabled(
+                "Ask Codex to derive a Global Prompt from the first formal chunk image.");
+        }
     }
     ImGui::Separator();
     if (ImGui::Button("Close")) {
@@ -628,6 +645,7 @@ void App::open_project_dialog() {
 
 void App::open_project(const std::filesystem::path& workspace, const std::string& name) {
     flush_prompt();
+    flush_global_prompt();
     auto request = make_request(chunkmap::CommandType::ProjectOpen);
     request.workspace = std::filesystem::absolute(workspace).lexically_normal();
     request.project_name = name;
@@ -647,6 +665,8 @@ void App::apply_project_snapshot(chunkmap::Project project, bool reset_selection
     selected_.reset();
     prompt_buffer_.clear();
     prompt_dirty_ = false;
+    global_prompt_buffer_.clear();
+    global_prompt_dirty_ = false;
     seam_analysis_.reset();
     textures_.clear();
     fit_requested_ = true;
@@ -660,6 +680,7 @@ void App::apply_project_snapshot(chunkmap::Project project, bool reset_selection
         ? "Project opened"
         : "Composite exceeds GPU texture limit; drawing chunks separately";
     error_message_.clear();
+    load_global_prompt();
     if (previous_selection && project_->config.contains(*previous_selection)) {
         select_chunk(*previous_selection);
     }
@@ -669,6 +690,7 @@ void App::reload_project() {
     if (!project_) return;
     const std::string name = project_->config.name;
     flush_prompt();
+    flush_global_prompt();
     auto request = make_request(chunkmap::CommandType::ProjectOpen);
     request.project_name = name;
     auto loaded = command_host_.submit_and_wait(std::move(request));
@@ -704,6 +726,34 @@ void App::flush_prompt() {
     if (written) {
         prompt_dirty_ = false;
         status_message_ = "Prompt updated";
+        error_message_.clear();
+    } else {
+        error_message_ = written.error().message;
+    }
+}
+
+void App::load_global_prompt() {
+    if (!project_) return;
+    auto request = make_request(chunkmap::CommandType::GlobalPromptShow);
+    auto prompt = command_host_.submit_and_wait(std::move(request));
+    if (prompt) {
+        global_prompt_buffer_ = prompt.value().data.value("prompt", std::string{});
+        global_prompt_dirty_ = false;
+    } else {
+        global_prompt_buffer_.clear();
+        global_prompt_dirty_ = false;
+        error_message_ = prompt.error().message;
+    }
+}
+
+void App::flush_global_prompt() {
+    if (!project_ || !global_prompt_dirty_) return;
+    auto request = make_request(chunkmap::CommandType::GlobalPromptSet);
+    request.payload = chunkmap::GlobalPromptSetPayload{global_prompt_buffer_};
+    auto written = command_host_.submit_and_wait(std::move(request));
+    if (written) {
+        global_prompt_dirty_ = false;
+        status_message_ = "Global Prompt updated";
         error_message_.clear();
     } else {
         error_message_ = written.error().message;
@@ -790,13 +840,18 @@ void App::import_image() {
         seam_analysis_.reset();
     }
     status_message_ = "Chunk image imported";
+    if (imported.value().data.contains("global_prompt_action")) {
+        status_message_ =
+            "First image imported. Ask Codex to create the project Global Prompt from it.";
+    }
     error_message_.clear();
 }
 
 void App::export_generation_context() {
     if (!project_ || !selected_ || ready_neighbor_count(*selected_) == 0) return;
     flush_prompt();
-    if (prompt_dirty_) return;
+    flush_global_prompt();
+    if (prompt_dirty_ || global_prompt_dirty_) return;
     auto request = make_request(chunkmap::CommandType::ChunkContext);
     request.payload = chunkmap::CoordPayload{*selected_};
     auto exported = command_host_.submit_and_wait(std::move(request));
@@ -899,6 +954,7 @@ void App::poll_commands() {
                 prompt_dirty_ = false;
             }
         }
+        if (result.changes.global_prompt_changed) load_global_prompt();
         status_message_ = "CLI command applied";
         error_message_.clear();
     }

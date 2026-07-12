@@ -27,7 +27,28 @@ if(NOT LAST_OUTPUT MATCHES "\"ok\":true")
     message(FATAL_ERROR "Concept context did not return JSON success: ${LAST_OUTPUT}")
 endif()
 
-run_chunkmap(--project phase3-world chunk import 1,1 --image "${IMAGE}")
+run_chunkmap(--project phase3-world --json global-prompt show)
+string(JSON initial_global_prompt GET "${LAST_OUTPUT}" data prompt)
+if(NOT initial_global_prompt STREQUAL "")
+    message(FATAL_ERROR "Initial Global Prompt must be empty: ${LAST_OUTPUT}")
+endif()
+file(WRITE "${WORKSPACE}/global-prompt.md" "Top-down GBA pixel art")
+run_chunkmap(--project phase3-world --json global-prompt set
+    --file "${WORKSPACE}/global-prompt.md")
+run_chunkmap(--project phase3-world --json global-prompt show)
+if(NOT LAST_OUTPUT MATCHES "Top-down GBA pixel art")
+    message(FATAL_ERROR "Global Prompt did not round trip: ${LAST_OUTPUT}")
+endif()
+
+run_chunkmap(--project phase3-world --json chunk import 1,1 --image "${IMAGE}")
+if(NOT LAST_OUTPUT MATCHES "global_prompt_action" OR
+   NOT LAST_OUTPUT MATCHES "first_chunk_imported")
+    message(FATAL_ERROR "First import did not request a Global Prompt: ${LAST_OUTPUT}")
+endif()
+run_chunkmap(--project phase3-world --json chunk import 1,1 --image "${IMAGE}")
+if(LAST_OUTPUT MATCHES "global_prompt_action")
+    message(FATAL_ERROR "Later import repeated the Global Prompt action: ${LAST_OUTPUT}")
+endif()
 execute_process(
     COMMAND "${CLI}" --workspace "${WORKSPACE}" --project phase3-world --json chunk context 0,0
     RESULT_VARIABLE no_neighbor_result
@@ -47,9 +68,18 @@ if(no_neighbor_write_result EQUAL 0 OR NOT no_neighbor_write_output MATCHES "no_
     message(FATAL_ERROR "No-neighbor generated write should fail: ${no_neighbor_write_output}")
 endif()
 
+file(WRITE "${WORKSPACE}/chunk-prompt.md" "A forest path beside a river")
+run_chunkmap(--project phase3-world prompt set 0,1 --file "${WORKSPACE}/chunk-prompt.md")
 run_chunkmap(--project phase3-world --json chunk context 0,1)
 if(NOT LAST_OUTPUT MATCHES "\"mask\"")
     message(FATAL_ERROR "Chunk context did not report an inpaint mask: ${LAST_OUTPUT}")
+endif()
+file(READ "${WORKSPACE}/output/phase3-world/context/chunk_0_1/prompt.txt" combined_prompt)
+if(NOT combined_prompt MATCHES "GLOBAL VISUAL STYLE" OR
+   NOT combined_prompt MATCHES "Top-down GBA pixel art" OR
+   NOT combined_prompt MATCHES "CHUNK CONTENT" OR
+   NOT combined_prompt MATCHES "A forest path beside a river")
+    message(FATAL_ERROR "Chunk context did not include Global Prompt: ${combined_prompt}")
 endif()
 run_chunkmap(--project phase3-world --json chunk write 0,1 --image "${IMAGE}")
 if(NOT LAST_OUTPUT MATCHES "\"registration\"")
@@ -68,6 +98,8 @@ foreach(required_file
         "context/concept/prompts.schema.json"
         "context/chunk_0_1/template.png"
         "context/chunk_0_1/mask.png"
+        "context/chunk_0_1/global_prompt.txt"
+        "context/chunk_0_1/chunk_prompt.txt"
         "context/chunk_0_1/prompt.txt"
         "context/chunk_0_1/manifest.json"
         "chunks/0_1/image.png"

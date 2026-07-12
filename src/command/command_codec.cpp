@@ -16,6 +16,7 @@ Result<CommandType> parse_type(const std::string& name) {
              CommandType::ProjectStatus, CommandType::ProjectValidate,
              CommandType::ConceptContext, CommandType::PromptsImport,
              CommandType::PromptShow, CommandType::PromptSet,
+             CommandType::GlobalPromptShow, CommandType::GlobalPromptSet,
              CommandType::ChunkImport, CommandType::ChunkContext, CommandType::ChunkWrite,
              CommandType::ChunkShow, CommandType::ChunkRemove,
              CommandType::Render, CommandType::SeamInspect,
@@ -52,6 +53,7 @@ json changes_json(const ChangeSet& changes) {
         {"project_changed", changes.project_changed},
         {"composite_changed", changes.composite_changed},
         {"concept_changed", changes.concept_changed},
+        {"global_prompt_changed", changes.global_prompt_changed},
         {"changed_chunks", chunks},
         {"changed_prompts", prompts},
         {"changed_seams", seams},
@@ -75,6 +77,8 @@ json encode_command_request(const CommandRequest& request) {
             payload = {{"coord", coord_value(value.coord)}};
         } else if constexpr (std::is_same_v<T, PromptSetPayload>) {
             payload = {{"coord", coord_value(value.coord)}, {"text", value.text}};
+        } else if constexpr (std::is_same_v<T, GlobalPromptSetPayload>) {
+            payload = {{"text", value.text}};
         } else if constexpr (std::is_same_v<T, PathPayload>) {
             payload = {{"path", value.path.string()}};
         } else if constexpr (std::is_same_v<T, ChunkImagePayload>) {
@@ -128,6 +132,9 @@ Result<CommandRequest> decode_command_request(const json& value) {
             request.payload = PromptSetPayload{
                 parse_coord(payload.at("coord")), payload.at("text").get<std::string>()};
             break;
+        case CommandType::GlobalPromptSet:
+            request.payload = GlobalPromptSetPayload{payload.at("text").get<std::string>()};
+            break;
         case CommandType::PromptsImport:
         case CommandType::MapExport:
             request.payload = PathPayload{payload.at("path").get<std::string>()};
@@ -153,6 +160,7 @@ Result<CommandRequest> decode_command_request(const json& value) {
         case CommandType::ProjectStatus:
         case CommandType::ProjectValidate:
         case CommandType::ConceptContext:
+        case CommandType::GlobalPromptShow:
         case CommandType::Render:
             request.payload = std::monostate{};
             break;

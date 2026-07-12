@@ -71,6 +71,19 @@ Bulk Prompt import uses this shape and overwrites only the listed coordinates:
   prompts import --input /path/to/prompts.json
 ```
 
+Read or replace the project-wide visual style Prompt:
+
+```bash
+./build/cli/chunkmap --project my-world global-prompt show
+./build/cli/chunkmap --project my-world \
+  global-prompt set --file /path/to/global-prompt.md
+```
+
+The first successful `chunk import` reports a `global_prompt_action` in JSON
+mode. Codex should analyze the returned formal `seed_image`, describe only its
+reusable visual style, and write the result with `global-prompt set`. The seed
+identity is not persisted; users can edit the Global Prompt at any time.
+
 All commands accept `--workspace <path>` and `--json`.
 
 JSON mode has a stable versioned envelope:
@@ -104,6 +117,10 @@ inspection. UI and CLI writes share one FIFO `DocumentCommandQueue`; completed
 CLI commands refresh the app through `ChangeSet`, without file polling. Image
 generation remains outside the app and can use either Codex with the CLI or a
 manually operated external image generator.
+
+The Project Settings modal edits the Global Prompt shared by every chunk. A
+chunk generation context exports the Global Prompt, the coordinate's Chunk
+Prompt, and a combined `prompt.txt` alongside its template and mask.
 
 The same workflow can be used without Codex or the CLI. Select a chunk with at
 least one Ready orthogonal neighbor and use `Export Context` in the Chunk tab.

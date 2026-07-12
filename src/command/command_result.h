@@ -31,6 +31,7 @@ struct ChangeSet {
     bool project_changed = false;
     bool composite_changed = false;
     bool concept_changed = false;
+    bool global_prompt_changed = false;
     std::vector<ChunkCoord> changed_chunks;
     std::vector<ChunkCoord> changed_prompts;
     std::vector<SeamKey> changed_seams;

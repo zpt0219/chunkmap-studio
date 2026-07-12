@@ -229,6 +229,30 @@ Result<CommandResult> CommandDispatcher::execute(const CommandRequest& request) 
             break;
         }
 
+        case CommandType::GlobalPromptShow: {
+            auto prompt = service.read_global_prompt(project.value());
+            if (!prompt) return Result<CommandResult>::failure(
+                prompt.error().code, prompt.error().message);
+            result.data = {{"prompt", prompt.value()},
+                           {"path", project.value().paths.global_prompt().string()}};
+            result.text = prompt.value();
+            break;
+        }
+
+        case CommandType::GlobalPromptSet: {
+            auto payload = require_payload<GlobalPromptSetPayload>(request);
+            if (!payload) return Result<CommandResult>::failure(
+                payload.error().code, payload.error().message);
+            auto written = service.write_global_prompt(project.value(), payload.value()->text);
+            if (!written) return Result<CommandResult>::failure(
+                written.error().code, written.error().message);
+            result.data = {{"path", project.value().paths.global_prompt().string()},
+                           {"prompt", payload.value()->text}};
+            result.text = "Updated project Global Prompt";
+            result.changes.global_prompt_changed = true;
+            break;
+        }
+
         case CommandType::ChunkContext: {
             auto payload = require_payload<CoordPayload>(request);
             if (!payload) return Result<CommandResult>::failure(
@@ -243,6 +267,8 @@ Result<CommandResult> CommandDispatcher::execute(const CommandRequest& request) 
                 {"template", context.value().template_image.string()},
                 {"mask", context.value().mask_image.string()},
                 {"mask_convention", "white_generate_black_protect"},
+                {"global_prompt", context.value().global_prompt.string()},
+                {"chunk_prompt", context.value().chunk_prompt.string()},
                 {"prompt", context.value().prompt.string()},
                 {"manifest", context.value().manifest.string()},
                 {"ready_neighbors", context.value().ready_directions},
@@ -289,6 +315,25 @@ Result<CommandResult> CommandDispatcher::execute(const CommandRequest& request) 
             result.text = (request.type == CommandType::ChunkImport
                 ? "Imported official chunk image " : "Wrote generated chunk image ") +
                 written.value().image.string();
+            if (request.type == CommandType::ChunkImport && initialized_size) {
+                const std::string write_command =
+                    "chunkmap --workspace \"" + request.workspace.string() +
+                    "\" --project " + project_name +
+                    " global-prompt set --file <global-prompt.md>";
+                result.data["global_prompt_action"] = {
+                    {"required", true},
+                    {"reason", "first_chunk_imported"},
+                    {"seed_image", written.value().image.string()},
+                    {"instruction",
+                     "Analyze this formal chunk image and write a project-wide visual style "
+                     "prompt. Describe style, palette, camera, scale, lighting, rendering "
+                     "rules, and exclusions; do not describe this chunk's local layout."},
+                    {"write_command", write_command},
+                };
+                result.text +=
+                    "\nThis is the first formal chunk image. Analyze its visual style and "
+                    "write the project Global Prompt with:\n" + write_command;
+            }
             result.changes.changed_chunks.push_back(payload.value()->coord);
             result.changes.composite_changed = true;
             if (initialized_size) {

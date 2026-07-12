@@ -28,6 +28,7 @@ public:
     const std::string& project_name() const { return project_name_; }
 
     std::filesystem::path project_json() const;
+    std::filesystem::path global_prompt() const;
     std::filesystem::path concept_dir() const;
     std::filesystem::path concept_source() const;
     std::filesystem::path concept_regions_dir() const;

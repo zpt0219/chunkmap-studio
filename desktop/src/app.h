@@ -36,6 +36,8 @@ private:
     void reload_project();
     void select_chunk(chunkmap::ChunkCoord coord);
     void flush_prompt();
+    void flush_global_prompt();
+    void load_global_prompt();
     void fit_map(const ImVec2& available);
     void focus_selected(const ImVec2& available);
     void import_image();
@@ -58,6 +60,10 @@ private:
     std::string prompt_buffer_;
     bool prompt_dirty_ = false;
     double prompt_last_edit_ = 0.0;
+
+    std::string global_prompt_buffer_;
+    bool global_prompt_dirty_ = false;
+    double global_prompt_last_edit_ = 0.0;
 
     float zoom_ = 1.0F;
     ImVec2 pan_ = ImVec2(0.0F, 0.0F);

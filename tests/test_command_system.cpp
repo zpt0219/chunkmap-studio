@@ -39,6 +39,52 @@ TEST_CASE("command codec preserves typed payload") {
     CHECK(payload->image == std::filesystem::path("/tmp/generated image.png"));
 }
 
+TEST_CASE("command codec preserves global prompt payload") {
+    auto original = request(
+        chunkmap::CommandType::GlobalPromptSet, "/tmp/work space", "codec-global", "world");
+    original.payload = chunkmap::GlobalPromptSetPayload{"Top-down pixel art"};
+    auto decoded = chunkmap::decode_command_request(chunkmap::encode_command_request(original));
+    REQUIRE(decoded);
+    CHECK(decoded.value().type == chunkmap::CommandType::GlobalPromptSet);
+    const auto* payload = std::get_if<chunkmap::GlobalPromptSetPayload>(&decoded.value().payload);
+    REQUIRE(payload != nullptr);
+    CHECK(payload->text == "Top-down pixel art");
+}
+
+TEST_CASE("first chunk import requests global prompt exactly once") {
+    const auto workspace = std::filesystem::temp_directory_path() /
+        "chunkmap-global-prompt-action";
+    std::error_code error;
+    std::filesystem::remove_all(workspace, error);
+
+    chunkmap::DocumentCommandQueue queue;
+    auto create = request(chunkmap::CommandType::ProjectCreate, workspace, "global-1", "world");
+    create.payload = chunkmap::ProjectCreatePayload{
+        "world", std::filesystem::path(CHUNKMAP_TEST_SOURCE_DIR) / "fixtures/chunk.png",
+        2, 2, 0.15, 0.15, 0.03};
+    REQUIRE(queue.submit(std::move(create)).get());
+
+    auto first = request(chunkmap::CommandType::ChunkImport, workspace, "global-2", "world");
+    first.payload = chunkmap::ChunkImagePayload{
+        {0, 0}, std::filesystem::path(CHUNKMAP_TEST_SOURCE_DIR) / "fixtures/chunk.png"};
+    auto first_result = queue.submit(std::move(first)).get();
+    REQUIRE(first_result);
+    REQUIRE(first_result.value().data.contains("global_prompt_action"));
+    CHECK(first_result.value().data["global_prompt_action"]["required"] == true);
+    CHECK(first_result.value().data["global_prompt_action"]["reason"] ==
+          "first_chunk_imported");
+
+    auto second = request(chunkmap::CommandType::ChunkImport, workspace, "global-3", "world");
+    second.payload = chunkmap::ChunkImagePayload{
+        {1, 1}, std::filesystem::path(CHUNKMAP_TEST_SOURCE_DIR) / "fixtures/chunk.png"};
+    auto second_result = queue.submit(std::move(second)).get();
+    REQUIRE(second_result);
+    CHECK_FALSE(second_result.value().data.contains("global_prompt_action"));
+
+    queue.stop_and_drain();
+    std::filesystem::remove_all(workspace, error);
+}
+
 TEST_CASE("document command queue executes one FIFO write path") {
     const auto workspace = std::filesystem::temp_directory_path() /
         "chunkmap-phase6-command-queue";

@@ -67,6 +67,10 @@ TEST_CASE("project creation leaves chunk size empty and creates prompt files") {
     CHECK(project.config.rows == 2);
     CHECK_FALSE(project.config.has_chunk_size());
     CHECK(std::filesystem::is_regular_file(project.paths.concept_source()));
+    CHECK(std::filesystem::is_regular_file(project.paths.global_prompt()));
+    auto global_prompt = service.read_global_prompt(project);
+    REQUIRE(global_prompt.ok());
+    CHECK(global_prompt.value().empty());
 
     for (int y = 0; y < project.config.rows; ++y) {
         for (int x = 0; x < project.config.columns; ++x) {
@@ -77,6 +81,37 @@ TEST_CASE("project creation leaves chunk size empty and creates prompt files") {
         }
     }
     CHECK(service.validate(project).ok());
+}
+
+TEST_CASE("global prompt can be edited independently from chunk prompts") {
+    TempWorkspace workspace;
+    chunkmap::ProjectService service(workspace.path);
+    auto project = create_project(workspace, service);
+
+    REQUIRE(service.write_global_prompt(project, "Top-down GBA pixel art").ok());
+    REQUIRE(service.write_prompt(project, {1, 1}, "A forest path").ok());
+    auto global = service.read_global_prompt(project);
+    auto chunk = service.read_prompt(project, {1, 1});
+    REQUIRE(global.ok());
+    REQUIRE(chunk.ok());
+    CHECK(global.value() == "Top-down GBA pixel art");
+    CHECK(chunk.value() == "A forest path");
+}
+
+TEST_CASE("legacy project without global prompt treats it as empty") {
+    TempWorkspace workspace;
+    chunkmap::ProjectService service(workspace.path);
+    auto project = create_project(workspace, service);
+    std::error_code error;
+    std::filesystem::remove(project.paths.global_prompt(), error);
+    REQUIRE_FALSE(error);
+
+    auto global = service.read_global_prompt(project);
+    REQUIRE(global.ok());
+    CHECK(global.value().empty());
+    CHECK(service.validate(project).ok());
+    REQUIRE(service.write_global_prompt(project, "Pixel art").ok());
+    CHECK(std::filesystem::is_regular_file(project.paths.global_prompt()));
 }
 
 TEST_CASE("first imported image determines chunk size and survives reload") {
@@ -235,11 +270,19 @@ TEST_CASE("chunk context requires a Ready neighbor and excludes concept referenc
     CHECK(unavailable.error().code == "no_ready_neighbor");
 
     REQUIRE(service.write_prompt(project, {1, 1}, "dense forest path").ok());
+    REQUIRE(service.write_global_prompt(project, "Top-down GBA pixel art").ok());
     auto context = service.export_chunk_context(project, {1, 1});
     REQUIRE(context.ok());
     CHECK(context.value().ready_directions == std::vector<std::string>{"right"});
     CHECK(std::filesystem::is_regular_file(context.value().template_image));
     CHECK(std::filesystem::is_regular_file(context.value().mask_image));
+    CHECK(std::filesystem::is_regular_file(context.value().global_prompt));
+    CHECK(std::filesystem::is_regular_file(context.value().chunk_prompt));
+    auto combined = chunkmap::atomic_file::read_text(context.value().prompt);
+    REQUIRE(combined.ok());
+    CHECK(combined.value() ==
+          "[GLOBAL VISUAL STYLE]\nTop-down GBA pixel art\n\n"
+          "[CHUNK CONTENT]\ndense forest path");
     auto mask = chunkmap::ImageBuffer::load(context.value().mask_image);
     REQUIRE(mask.ok());
     CHECK(mask.value().pixel(0, 5)[0] == 255);
@@ -249,6 +292,15 @@ TEST_CASE("chunk context requires a Ready neighbor and excludes concept referenc
     CHECK(manifest.value().find("concept_image") == std::string::npos);
     CHECK(manifest.value().find("concept/regions") == std::string::npos);
     CHECK(manifest.value().find("neighbor hash") == std::string::npos);
+    CHECK(manifest.value().find("global_prompt.txt") != std::string::npos);
+    CHECK(manifest.value().find("chunk_prompt.txt") != std::string::npos);
+
+    REQUIRE(service.write_global_prompt(project, "").ok());
+    auto context_without_global = service.export_chunk_context(project, {1, 1});
+    REQUIRE(context_without_global.ok());
+    auto chunk_only = chunkmap::atomic_file::read_text(context_without_global.value().prompt);
+    REQUIRE(chunk_only.ok());
+    CHECK(chunk_only.value() == "dense forest path");
 }
 
 TEST_CASE("chunk write overwrites the official image and rebuilds composite") {

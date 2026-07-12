@@ -85,6 +85,7 @@ int CliApp::run() {
     if (command_line_.args[0] == "project") return run_project();
     if (command_line_.args[0] == "prompt") return run_prompt();
     if (command_line_.args[0] == "prompts") return run_prompts();
+    if (command_line_.args[0] == "global-prompt") return run_global_prompt();
     if (command_line_.args[0] == "concept") return run_concept();
     if (command_line_.args[0] == "chunk") return run_chunk();
     if (command_line_.args[0] == "render") return run_render();
@@ -192,6 +193,28 @@ int CliApp::run_prompts() {
     if (!input) return usage_error("prompts import requires --input.");
     auto request = make_request(chunkmap::CommandType::PromptsImport);
     request.payload = chunkmap::PathPayload{absolute_path(*input)};
+    return execute(std::move(request));
+}
+
+int CliApp::run_global_prompt() {
+    if (command_line_.args.size() < 2U) {
+        return usage_error("global-prompt requires show or set.");
+    }
+    auto project = require_project();
+    if (!project) return print_error("global-prompt", project.error());
+    const auto& action = command_line_.args[1];
+    if (action == "show") {
+        return execute(make_request(chunkmap::CommandType::GlobalPromptShow));
+    }
+    if (action != "set") {
+        return usage_error("Unknown global-prompt subcommand: " + action);
+    }
+    const auto file = option_value(command_line_.args, "--file");
+    if (!file) return usage_error("global-prompt set requires --file.");
+    auto content = chunkmap::atomic_file::read_text(*file);
+    if (!content) return print_error("global-prompt set", content.error());
+    auto request = make_request(chunkmap::CommandType::GlobalPromptSet);
+    request.payload = chunkmap::GlobalPromptSetPayload{content.take_value()};
     return execute(std::move(request));
 }
 
@@ -338,6 +361,7 @@ void CliApp::print_help() const {
         << "  project status\n  project validate\n"
         << "  prompt show <x,y>\n  prompt set <x,y> --file <path>\n"
         << "  prompts import --input <json>\n  concept context\n"
+        << "  global-prompt show\n  global-prompt set --file <path>\n"
         << "  chunk import <x,y> --image <path>\n"
         << "  chunk context <x,y>\n  chunk write <x,y> --image <path>\n"
         << "  chunk show <x,y>\n  chunk remove <x,y> --yes\n"

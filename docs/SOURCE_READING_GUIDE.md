@@ -84,6 +84,7 @@ struct Project {
 ```text
 output/<project-name>/
 ├── project.json
+├── global_prompt.md
 ├── concept/
 │   ├── source.png
 │   └── regions/<x,y>.png
@@ -199,7 +200,7 @@ Desktop 侧的 `DesktopCommandHost` 同时持有：
 | 分组 | 主要方法 |
 |---|---|
 | 项目生命周期 | `create_project`、`open_project`、`status`、`validate` |
-| Prompt | `read_prompt`、`write_prompt`、`import_prompts` |
+| Prompt | `read_global_prompt`、`write_global_prompt`、`read_prompt`、`write_prompt`、`import_prompts` |
 | Context | `export_concept_context`、`export_chunk_context` |
 | 正式图片 | `import_chunk_image`、`write_chunk_image`、`remove_chunk_image`、`rebuild_composite`、`inspect_seam` |
 
@@ -287,7 +288,7 @@ Composite 根据 step 把所有 Ready chunk 合成一张地图，并在 overlap 
 
 - 当前 `Project` snapshot；
 - 当前选中坐标；
-- prompt buffer 和 dirty flag；
+- Global Prompt、Chunk Prompt buffer 和 dirty flag；
 - zoom/pan；
 - 纹理缓存；
 - 当前 Seam 分析结果。
