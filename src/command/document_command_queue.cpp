@@ -36,6 +36,14 @@ std::vector<CommandCompletion> DocumentCommandQueue::take_completions() {
     return result;
 }
 
+CommandQueueUpdates DocumentCommandQueue::take_updates() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    CommandQueueUpdates result;
+    result.progress.swap(progress_);
+    result.completions.swap(completed_);
+    return result;
+}
+
 void DocumentCommandQueue::stop_and_drain() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -62,7 +70,14 @@ void DocumentCommandQueue::worker_loop() {
         }
 
         const auto started_at = std::chrono::steady_clock::now();
-        auto result = dispatcher_.execute(command.request);
+        auto result = dispatcher_.execute(
+            command.request,
+            [this, &command](std::size_t completed, std::size_t total,
+                             const std::string& message) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                progress_.push_back({command.request.request_id, command.request.type,
+                                     completed, total, message});
+            });
         const auto completed_at = std::chrono::steady_clock::now();
         const double queue_wait_ms =
             std::chrono::duration<double, std::milli>(started_at - command.enqueued_at).count();

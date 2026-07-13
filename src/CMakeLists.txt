@@ -13,6 +13,7 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(nlohmann_json stb)
 find_package(Threads REQUIRED)
+find_package(ZLIB REQUIRED)
 
 add_library(chunkmap_stb INTERFACE)
 target_include_directories(chunkmap_stb INTERFACE ${stb_SOURCE_DIR})
@@ -25,7 +26,9 @@ add_library(chunkmap_core STATIC
     command/document_command_queue.cpp
     core/version.cpp
     image/image_buffer.cpp
+    image/full_map_exporter.cpp
     image/image_pipeline.cpp
+    image/png_stream_writer.cpp
     image/seam_analyzer.cpp
     ipc/desktop_ipc.cpp
     io/atomic_file.cpp
@@ -44,6 +47,7 @@ target_link_libraries(chunkmap_core PUBLIC
     nlohmann_json::nlohmann_json
     chunkmap_stb
     Threads::Threads
+    ZLIB::ZLIB
 )
 chunkmap_enable_warnings(chunkmap_core)
 if(CHUNKMAP_ENABLE_SANITIZERS AND CHUNKMAP_BUILD_TESTS AND

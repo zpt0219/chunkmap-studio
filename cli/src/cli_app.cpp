@@ -89,6 +89,7 @@ int CliApp::run() {
     if (command_line_.args[0] == "concept") return run_concept();
     if (command_line_.args[0] == "chunk") return run_chunk();
     if (command_line_.args[0] == "seam") return run_seam();
+    if (command_line_.args[0] == "map") return run_map();
     return usage_error("Unknown command: " + command_line_.args[0]);
 }
 
@@ -277,6 +278,22 @@ int CliApp::run_seam() {
     return execute(std::move(request));
 }
 
+int CliApp::run_map() {
+    if (command_line_.args.size() < 3U || command_line_.args[1] != "export") {
+        return usage_error("map export requires an absolute PNG output path.");
+    }
+    if (command_line_.args.size() > 4U ||
+        (command_line_.args.size() == 4U && command_line_.args[3] != "--force")) {
+        return usage_error("map export accepts only an output path and optional --force.");
+    }
+    auto project = require_project();
+    if (!project) return print_error("map export", project.error());
+    auto request = make_request(chunkmap::CommandType::MapExport);
+    request.payload = chunkmap::MapExportPayload{
+        std::filesystem::path(command_line_.args[2]), has_flag(command_line_.args, "--force")};
+    return execute(std::move(request));
+}
+
 int CliApp::print_success(const std::string& command, nlohmann::json data, std::string text) {
     if (command_line_.json) {
         std::cout << nlohmann::json{{"schema_version", 1}, {"ok", true},
@@ -350,6 +367,7 @@ void CliApp::print_help() const {
         << "  chunk context <x,y>\n  chunk write <x,y> --image <path>\n"
         << "  chunk show <x,y>\n  chunk remove <x,y> --yes\n"
         << "  seam inspect <x,y> --direction right|bottom\n"
+        << "  map export <absolute-output.png> [--force]\n"
         << "  --version\n";
 }
 

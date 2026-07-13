@@ -8,6 +8,7 @@ FetchContent_MakeAvailable(doctest)
 
 add_executable(chunkmap_tests
     test_command_system.cpp
+    test_full_map_export.cpp
     test_golden_images.cpp
     test_image_pipeline.cpp
     test_phase6_architecture.cpp

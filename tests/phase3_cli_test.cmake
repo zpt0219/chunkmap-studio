@@ -89,6 +89,23 @@ endif()
 run_chunkmap(--project phase3-world --json seam inspect 0,1 --direction right)
 run_chunkmap(--project phase3-world project validate)
 
+set(full_map_export "${WORKSPACE}/phase3-full-map.png")
+run_chunkmap(--project phase3-world --json map export "${full_map_export}")
+if(NOT EXISTS "${full_map_export}" OR
+   NOT LAST_OUTPUT MATCHES "\"size\":\\[")
+    message(FATAL_ERROR "Full map export did not create a PNG: ${LAST_OUTPUT}")
+endif()
+execute_process(
+    COMMAND "${CLI}" --workspace "${WORKSPACE}" --project phase3-world --json
+        map export "${full_map_export}"
+    RESULT_VARIABLE existing_export_result
+    OUTPUT_VARIABLE existing_export_output
+)
+if(existing_export_result EQUAL 0 OR NOT existing_export_output MATCHES "export_exists")
+    message(FATAL_ERROR "Existing export should require --force: ${existing_export_output}")
+endif()
+run_chunkmap(--project phase3-world --json map export "${full_map_export}" --force)
+
 set(project_root "${WORKSPACE}/output/phase3-world")
 foreach(required_file
         "project.json"

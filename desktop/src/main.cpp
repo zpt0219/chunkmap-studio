@@ -128,6 +128,7 @@ int main(int argc, char** argv) {
             ImGui::NewFrame();
 
             app.draw();
+            if (app.exit_requested()) glfwSetWindowShouldClose(window, GLFW_TRUE);
 
             ImGui::Render();
             int framebuffer_width = 0;

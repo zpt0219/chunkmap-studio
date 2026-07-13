@@ -19,6 +19,19 @@ struct CommandCompletion {
     double execution_ms = 0.0;
 };
 
+struct CommandProgress {
+    std::string request_id;
+    CommandType type = CommandType::ProjectStatus;
+    std::size_t completed = 0;
+    std::size_t total = 0;
+    std::string message;
+};
+
+struct CommandQueueUpdates {
+    std::vector<CommandProgress> progress;
+    std::vector<CommandCompletion> completions;
+};
+
 class DocumentCommandQueue {
 public:
     DocumentCommandQueue();
@@ -27,6 +40,7 @@ public:
     DocumentCommandQueue& operator=(const DocumentCommandQueue&) = delete;
 
     std::future<Result<CommandResult>> submit(CommandRequest request);
+    CommandQueueUpdates take_updates();
     std::vector<CommandCompletion> take_completions();
     void stop_and_drain();
 
@@ -43,6 +57,7 @@ private:
     std::mutex mutex_;
     std::condition_variable condition_;
     std::deque<PendingCommand> pending_;
+    std::vector<CommandProgress> progress_;
     std::vector<CommandCompletion> completed_;
     bool accepting_ = true;
     bool stopping_ = false;

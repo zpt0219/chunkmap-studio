@@ -26,6 +26,7 @@ enum class CommandType {
     ChunkShow,
     ChunkRemove,
     SeamInspect,
+    MapExport,
 };
 
 struct ProjectCreatePayload {
@@ -69,6 +70,11 @@ struct SeamInspectPayload {
     CommandSeamDirection direction = CommandSeamDirection::Right;
 };
 
+struct MapExportPayload {
+    std::filesystem::path output;
+    bool overwrite = false;
+};
+
 using CommandPayload = std::variant<
     std::monostate,
     ProjectCreatePayload,
@@ -77,7 +83,8 @@ using CommandPayload = std::variant<
     GlobalPromptSetPayload,
     PathPayload,
     ChunkImagePayload,
-    SeamInspectPayload>;
+    SeamInspectPayload,
+    MapExportPayload>;
 
 struct CommandRequest {
     std::string request_id;

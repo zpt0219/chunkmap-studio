@@ -19,7 +19,7 @@ Result<CommandType> parse_type(const std::string& name) {
              CommandType::GlobalPromptShow, CommandType::GlobalPromptSet,
              CommandType::ChunkImport, CommandType::ChunkContext, CommandType::ChunkWrite,
              CommandType::ChunkShow, CommandType::ChunkRemove,
-             CommandType::SeamInspect}) {
+             CommandType::SeamInspect, CommandType::MapExport}) {
         if (command_name(type) == name) return Result<CommandType>::success(type);
     }
     return Result<CommandType>::failure("unknown_command", "Unknown command: " + name);
@@ -78,6 +78,8 @@ json encode_command_request(const CommandRequest& request) {
             payload = {{"coord", coord_value(value.coord)},
                        {"direction", value.direction == CommandSeamDirection::Right
                            ? "right" : "bottom"}};
+        } else if constexpr (std::is_same_v<T, MapExportPayload>) {
+            payload = {{"output", value.output.string()}, {"overwrite", value.overwrite}};
         }
     }, request.payload);
     return {
@@ -138,6 +140,11 @@ Result<CommandRequest> decode_command_request(const json& value) {
                 parse_coord(payload.at("coord")),
                 payload.at("direction").get<std::string>() == "right"
                     ? CommandSeamDirection::Right : CommandSeamDirection::Bottom};
+            break;
+        case CommandType::MapExport:
+            request.payload = MapExportPayload{
+                payload.at("output").get<std::string>(),
+                payload.at("overwrite").get<bool>()};
             break;
         case CommandType::PromptShow:
         case CommandType::ChunkContext:

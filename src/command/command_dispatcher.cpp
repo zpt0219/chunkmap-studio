@@ -1,6 +1,7 @@
 #include "command/command_dispatcher.h"
 
 #include "image/image_buffer.h"
+#include "image/full_map_exporter.h"
 #include "io/atomic_file.h"
 #include "project/project_service.h"
 
@@ -94,7 +95,8 @@ Result<NeighborImages> document_neighbors(ProjectDocument& document, ChunkCoord 
 
 }  // namespace
 
-Result<CommandResult> CommandDispatcher::execute(const CommandRequest& request) {
+Result<CommandResult> CommandDispatcher::execute(
+    const CommandRequest& request, const CommandProgressCallback& progress) {
     try {
         ProjectService& service = session_.service(request.workspace);
         CommandResult result;
@@ -436,6 +438,25 @@ Result<CommandResult> CommandDispatcher::execute(const CommandRequest& request) 
             result.text = "Seam MAE: " +
                           std::to_string(analysis.value().mean_absolute_rgb_difference);
             result.seam_analysis = analysis.take_value();
+            break;
+        }
+
+        case CommandType::MapExport: {
+            auto payload = require_payload<MapExportPayload>(request);
+            if (!payload) return Result<CommandResult>::failure(
+                payload.error().code, payload.error().message);
+            auto exported = export_full_map(
+                document, {payload.value()->output, payload.value()->overwrite}, progress);
+            if (!exported) return Result<CommandResult>::failure(
+                exported.error().code, exported.error().message);
+            result.data = {
+                {"output", exported.value().output.string()},
+                {"size", {exported.value().width, exported.value().height}},
+                {"ready_chunks", exported.value().ready_chunks},
+                {"empty_chunks", exported.value().empty_chunks},
+            };
+            result.text = "Exported full map to " + exported.value().output.string();
+            result.changes = {};
             break;
         }
 

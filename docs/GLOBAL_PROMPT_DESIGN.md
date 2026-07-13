@@ -276,18 +276,18 @@ Manifest 增加：
 
 ## 9. Desktop UI
 
-在 `Project Settings` 中增加 Global Prompt 多行编辑器，而不是放进当前 Chunk Inspector 的 Prompt tab。
+Prompt Inspector 同时显示两份独立源文本：
 
-原因是：
+- `Global Prompt`：整个项目共享的视觉风格；
+- `Local Chunk Prompt`：当前坐标独有的内容与布局。
 
-- Chunk Inspector 表达当前坐标；
-- Global Prompt 属于整个项目；
-- 分开放置可以降低误编辑风险。
+两者使用不同 label 和说明文字，按生成时的组合顺序上下排列。Global Prompt 在
+`Project Settings` 中仍可编辑，两个入口绑定同一份 project buffer，不保存组合副本。
 
 编辑行为与现有 Chunk Prompt 一致：
 
 - 文本变化后标记 dirty；
-- 停止输入一小段时间后写入；
+- 停止输入 60 秒后写入；
 - 失焦、切换项目或关闭 App 时立即 flush；
 - CLI 写入通过 `global_prompt_changed` 刷新编辑器。
 

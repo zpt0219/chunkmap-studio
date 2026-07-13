@@ -347,10 +347,16 @@ Codex can generate this chunk from 2 neighbors.
 
 操作：
 
+- `Visible on Map`：仅控制当前 Desktop 会话中的 Ready 图片图层。关闭时地图用该坐标的
+  Concept region 覆盖该 chunk 的完整 footprint（包括 overlap）；不改变 Ready、正式图片、
+  Context、Seam 或整图导出。
 - Import Image 或 Replace Image，Empty/Ready chunk 均可用。
 - Export Context，有 Ready 正交邻居时可用。
 - Reveal Image File，仅 Ready chunk 可用。
 - Copy Coordinate。
+
+Visibility 默认开启，只存在于 `App` 内存；Open 或 Reload 项目后全部恢复可见，不写入
+`project.json` 或其他项目文件。隐藏的 chunk 仍可选择，Inspector 仍显示其正式图片。
 
 `Export Context` 直接向 Desktop 的 DocumentCommandQueue 提交 `ChunkContext`，导出后在
 文件管理器中显示 `manifest.json`。用户在外部工具生成后，仍使用统一的 Import Image
@@ -366,10 +372,13 @@ Composite 与 Seam 重建。
 
 ### 5.5 Prompt 标签页
 
-整个标签页就是一个始终可编辑的多行文本编辑器，显示该坐标唯一的当前 `prompt.md`。第一版不提供结构化表单和文本模式切换。
+标签页包含两个始终可编辑、明确标注的多行文本编辑器：上方 Global Prompt 控制整个
+项目的共享视觉风格，下方 Local Chunk Prompt 控制当前坐标的内容与布局。生成 context
+会组合两者，但 App 不保存组合后的第三份 Prompt。
 
 编辑器支持常规文本操作：
 
+- 按编辑器宽度进行软换行，不修改或插入 Prompt 原文中的换行符。
 - 光标移动和文本选择。
 - `Ctrl/Cmd+C`、`Ctrl/Cmd+X`、`Ctrl/Cmd+V`。
 - `Ctrl/Cmd+Z` 和 `Ctrl/Cmd+Shift+Z`。
@@ -377,7 +386,8 @@ Composite 与 Seam 重建。
 
 界面没有 Edit、Save、Revert 或 Copy Prompt 按钮。用户点击文本即可编辑，复制使用文本编辑器的标准选择和快捷键。
 
-修改采用短暂 debounce 自动写入 `prompt.md`，并在切换 chunk、编辑器失焦或关闭项目时强制写入。
+修改采用 60 秒 debounce，连续输入期间不会逐字符写盘；任一编辑器失焦、切换
+chunk/项目或关闭 App 时会强制写入尚未保存的内容。标签页底部显示 dirty 或 autosaved 状态。
 
 没有 prompt revision、Generated Brief、User Notes 或历史版本。
 

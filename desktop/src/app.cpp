@@ -43,6 +43,7 @@ constexpr ImU32 kCanvas = IM_COL32(24, 27, 30, 255);
 constexpr ImU32 kGrid = IM_COL32(111, 122, 126, 150);
 constexpr ImU32 kSelection = IM_COL32(76, 159, 255, 255);
 constexpr ImU32 kEmpty = IM_COL32(17, 20, 22, 150);
+constexpr double kPromptAutosaveDelaySeconds = 60.0;
 
 std::string next_desktop_request_id() {
     static std::atomic<unsigned long long> sequence{0};
@@ -103,17 +104,119 @@ App::~App() {
 
 void App::draw() {
     poll_commands();
+    draw_main_menu_bar();
     draw_dockspace();
-    draw_toolbar();
+    if (show_map_controls_) draw_map_controls();
     draw_map();
-    draw_inspector();
-    draw_log_panel();
+    if (show_inspector_) draw_inspector();
+    if (show_log_) draw_log_panel();
     draw_new_project_modal();
     draw_project_settings_modal();
-    if (prompt_dirty_ && ImGui::GetTime() - prompt_last_edit_ >= 0.5) flush_prompt();
-    if (global_prompt_dirty_ && ImGui::GetTime() - global_prompt_last_edit_ >= 0.5) {
+    draw_export_progress_modal();
+    if (prompt_dirty_ &&
+        ImGui::GetTime() - prompt_last_edit_ >= kPromptAutosaveDelaySeconds) {
+        flush_prompt();
+    }
+    if (global_prompt_dirty_ &&
+        ImGui::GetTime() - global_prompt_last_edit_ >= kPromptAutosaveDelaySeconds) {
         flush_global_prompt();
     }
+}
+
+void App::draw_main_menu_bar() {
+#if defined(__APPLE__)
+    constexpr const char* kNewShortcut = "Cmd+N";
+    constexpr const char* kOpenShortcut = "Cmd+O";
+    constexpr const char* kReloadShortcut = "Cmd+R";
+    constexpr const char* kExportShortcut = "Cmd+Shift+E";
+    constexpr const char* kQuitShortcut = "Cmd+Q";
+#else
+    constexpr const char* kNewShortcut = "Ctrl+N";
+    constexpr const char* kOpenShortcut = "Ctrl+O";
+    constexpr const char* kReloadShortcut = "Ctrl+R";
+    constexpr const char* kExportShortcut = "Ctrl+Shift+E";
+    constexpr const char* kQuitShortcut = "Ctrl+Q";
+#endif
+
+    bool new_project = false;
+    bool open_project = false;
+    bool reload = false;
+    bool export_map = false;
+    bool project_settings = false;
+    bool fit_map = false;
+    bool focus_selection = false;
+    bool reset_layout = false;
+    bool quit = false;
+
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("File")) {
+            new_project = ImGui::MenuItem("New Project...", kNewShortcut);
+            open_project = ImGui::MenuItem("Open Project...", kOpenShortcut);
+            ImGui::Separator();
+            reload = ImGui::MenuItem("Reload Project", kReloadShortcut, false, project_.has_value());
+            ImGui::Separator();
+            export_map = ImGui::MenuItem(
+                "Export Full Map...", kExportShortcut, false,
+                project_.has_value() && !pending_export_request_id_);
+            ImGui::Separator();
+            quit = ImGui::MenuItem("Quit", kQuitShortcut);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Project", project_.has_value())) {
+            project_settings = ImGui::MenuItem("Project Settings...");
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("View")) {
+            fit_map = ImGui::MenuItem("Fit Map", "Home", false, project_.has_value());
+            focus_selection = ImGui::MenuItem(
+                "Focus Selected", "F", false, project_.has_value() && selected_.has_value());
+            ImGui::Separator();
+            ImGui::BeginDisabled(!project_);
+            ImGui::MenuItem("Grid", nullptr, &show_grid_);
+            ImGui::MenuItem("Coordinates", nullptr, &show_coordinates_);
+            ImGui::MenuItem("Seams", nullptr, &show_seams_);
+            ImGui::EndDisabled();
+            ImGui::Separator();
+            if (ImGui::BeginMenu("Panels")) {
+                ImGui::MenuItem("Map Controls", nullptr, &show_map_controls_);
+                ImGui::MenuItem("Inspector", nullptr, &show_inspector_);
+                ImGui::MenuItem("Log", nullptr, &show_log_);
+                ImGui::EndMenu();
+            }
+            reset_layout = ImGui::MenuItem("Reset Layout");
+            ImGui::EndMenu();
+        }
+        ImGui::EndMainMenuBar();
+    }
+
+    const ImGuiInputFlags global = ImGuiInputFlags_RouteGlobal;
+    const bool popup_open = ImGui::IsPopupOpen(
+        nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    if (!popup_open) {
+        new_project |= ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_N, global);
+        open_project |= ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_O, global);
+        if (project_) reload |= ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_R, global);
+        if (project_ && !pending_export_request_id_) {
+            export_map |= ImGui::Shortcut(
+                ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_E, global);
+        }
+    }
+    quit |= ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Q, global);
+
+    if (new_project) new_project_dialog();
+    if (open_project) open_project_dialog();
+    if (reload) reload_project();
+    if (export_map) export_full_map();
+    if (project_settings) show_project_settings_ = true;
+    if (fit_map) fit_requested_ = true;
+    if (focus_selection) focus_selected(last_canvas_size_);
+    if (reset_layout) {
+        show_map_controls_ = true;
+        show_inspector_ = true;
+        show_log_ = true;
+        layout_initialized_ = false;
+    }
+    if (quit) exit_requested_ = true;
 }
 
 void App::draw_dockspace() {
@@ -139,13 +242,16 @@ void App::draw_dockspace() {
         ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
         ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
         ImGuiID body = dockspace_id;
-        ImGuiID toolbar = ImGui::DockBuilderSplitNode(
+        ImGuiID map_controls = ImGui::DockBuilderSplitNode(
             body, ImGuiDir_Up, 0.075F, nullptr, &body);
+        if (ImGuiDockNode* node = ImGui::DockBuilderGetNode(map_controls)) {
+            node->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
+        }
         ImGuiID log = ImGui::DockBuilderSplitNode(
             body, ImGuiDir_Down, 0.26F, nullptr, &body);
         ImGuiID inspector = ImGui::DockBuilderSplitNode(
             body, ImGuiDir_Right, 0.29F, nullptr, &body);
-        ImGui::DockBuilderDockWindow("Toolbar", toolbar);
+        ImGui::DockBuilderDockWindow("Map Controls", map_controls);
         ImGui::DockBuilderDockWindow("Map", body);
         ImGui::DockBuilderDockWindow("Inspector", inspector);
         ImGui::DockBuilderDockWindow("Log", log);
@@ -154,19 +260,11 @@ void App::draw_dockspace() {
     ImGui::End();
 }
 
-void App::draw_toolbar() {
-    ImGui::Begin("Toolbar", nullptr,
+void App::draw_map_controls() {
+    ImGui::Begin("Map Controls", &show_map_controls_,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar |
                  ImGuiWindowFlags_NoScrollWithMouse);
-    if (ImGui::Button("Open Project")) open_project_dialog();
-    ImGui::SameLine();
-    if (ImGui::Button("New Project")) show_new_project_ = true;
-    ImGui::SameLine();
     ImGui::BeginDisabled(!project_);
-    if (ImGui::Button("Project Settings")) show_project_settings_ = true;
-    ImGui::SameLine();
-    if (ImGui::Button("Reload")) reload_project();
-    ImGui::SameLine();
     if (ImGui::Button("Fit Map")) fit_requested_ = true;
     ImGui::SameLine();
     ImGui::Checkbox("Grid", &show_grid_);
@@ -177,9 +275,16 @@ void App::draw_toolbar() {
     ImGui::EndDisabled();
 
     if (project_) {
+        int ready = 0;
+        for (int y = 0; y < project_->config.rows; ++y) {
+            for (int x = 0; x < project_->config.columns; ++x) {
+                ready += chunk_ready({x, y}) ? 1 : 0;
+            }
+        }
         ImGui::SameLine();
-        ImGui::TextDisabled("%s  |  %dx%d", project_->config.name.c_str(),
-                            project_->config.columns, project_->config.rows);
+        ImGui::TextDisabled("%s  |  %dx%d  |  %d/%d Ready", project_->config.name.c_str(),
+                            project_->config.columns, project_->config.rows, ready,
+                            project_->config.columns * project_->config.rows);
     }
     if (!error_message_.empty()) {
         ImGui::SameLine();
@@ -187,6 +292,10 @@ void App::draw_toolbar() {
     } else if (!status_message_.empty()) {
         ImGui::SameLine();
         ImGui::TextDisabled("%s", status_message_.c_str());
+    }
+    if (last_export_path_) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reveal Export")) reveal_file(*last_export_path_);
     }
     ImGui::End();
 }
@@ -201,7 +310,7 @@ void App::draw_map() {
         ImGui::TextUnformatted("Open a map project to begin review.");
         if (ImGui::Button("Open Project", ImVec2(132.0F, 34.0F))) open_project_dialog();
         ImGui::SameLine();
-        if (ImGui::Button("New Project", ImVec2(132.0F, 34.0F))) show_new_project_ = true;
+        if (ImGui::Button("New Project", ImVec2(132.0F, 34.0F))) new_project_dialog();
         ImGui::End();
         return;
     }
@@ -258,50 +367,66 @@ void App::draw_map() {
         return ImVec2(origin.x + (x - pan_.x) * zoom_, origin.y + (y - pan_.y) * zoom_);
     };
 
-    bool has_empty_chunk = !detailed;
+    bool needs_concept_texture = !detailed;
     if (detailed) {
-        for (int y = 0; y < project_->config.rows && !has_empty_chunk; ++y) {
+        for (int y = 0; y < project_->config.rows && !needs_concept_texture; ++y) {
             for (int x = 0; x < project_->config.columns; ++x) {
-                if (!chunk_ready({x, y})) {
-                    has_empty_chunk = true;
+                const chunkmap::ChunkCoord coord{x, y};
+                if (!chunk_ready(coord) || !chunk_image_visible(coord)) {
+                    needs_concept_texture = true;
                     break;
                 }
             }
         }
     }
-    GlTexture* concept_texture = has_empty_chunk
+    GlTexture* concept_texture = needs_concept_texture
         ? textures_.get(project_->paths.concept_source()) : nullptr;
+    auto draw_concept_region = [&](chunkmap::ChunkCoord coord, ImU32 tint) {
+        const ImVec2 top_left = to_screen(
+            static_cast<float>(coord.x * step_x), static_cast<float>(coord.y * step_y));
+        const ImVec2 bottom_right = to_screen(
+            static_cast<float>(coord.x * step_x + chunk_width),
+            static_cast<float>(coord.y * step_y + chunk_height));
+        if (concept_texture) {
+            const ImVec2 uv0(
+                static_cast<float>(coord.x) / project_->config.columns,
+                static_cast<float>(coord.y) / project_->config.rows);
+            const ImVec2 uv1(
+                static_cast<float>(coord.x + 1) / project_->config.columns,
+                static_cast<float>(coord.y + 1) / project_->config.rows);
+            draw->AddImage(texture_id(*concept_texture), top_left, bottom_right, uv0, uv1, tint);
+        } else {
+            draw->AddRectFilled(top_left, bottom_right, kEmpty);
+        }
+    };
+
     for (int y = 0; y < project_->config.rows; ++y) {
         for (int x = 0; x < project_->config.columns; ++x) {
             const chunkmap::ChunkCoord coord{x, y};
             if (chunk_ready(coord)) continue;
-            const ImVec2 top_left = to_screen(static_cast<float>(x * step_x), static_cast<float>(y * step_y));
-            const ImVec2 bottom_right = to_screen(
-                static_cast<float>(x * step_x + chunk_width),
-                static_cast<float>(y * step_y + chunk_height));
-            if (concept_texture) {
-                const ImVec2 uv0(
-                    static_cast<float>(x) / project_->config.columns,
-                    static_cast<float>(y) / project_->config.rows);
-                const ImVec2 uv1(
-                    static_cast<float>(x + 1) / project_->config.columns,
-                    static_cast<float>(y + 1) / project_->config.rows);
-                draw->AddImage(texture_id(*concept_texture), top_left, bottom_right,
-                               uv0, uv1, IM_COL32(160, 178, 167, 92));
-            } else {
-                draw->AddRectFilled(top_left, bottom_right, kEmpty);
-            }
+            draw_concept_region(coord, IM_COL32(160, 178, 167, 92));
         }
     }
     if (detailed) {
         for (int y = 0; y < project_->config.rows; ++y) {
             for (int x = 0; x < project_->config.columns; ++x) {
                 const chunkmap::ChunkCoord coord{x, y};
+                if (!chunk_image_visible(coord)) continue;
                 if (GlTexture* chunk = textures_.get(project_->paths.chunk_image(coord))) {
                     draw->AddImage(texture_id(*chunk),
                         to_screen(static_cast<float>(x * step_x), static_cast<float>(y * step_y)),
                         to_screen(static_cast<float>(x * step_x + chunk_width),
                                   static_cast<float>(y * step_y + chunk_height)));
+                }
+            }
+        }
+        // Hidden chunks are the final image layer so their full footprint, including overlap,
+        // cannot be painted back by a neighboring Ready chunk.
+        for (int y = 0; y < project_->config.rows; ++y) {
+            for (int x = 0; x < project_->config.columns; ++x) {
+                const chunkmap::ChunkCoord coord{x, y};
+                if (chunk_ready(coord) && !chunk_image_visible(coord)) {
+                    draw_concept_region(coord, IM_COL32_WHITE);
                 }
             }
         }
@@ -390,7 +515,7 @@ void App::draw_map() {
 }
 
 void App::draw_inspector() {
-    ImGui::Begin("Inspector");
+    ImGui::Begin("Inspector", &show_inspector_);
     if (!project_) {
         ImGui::TextDisabled("No project open");
         ImGui::End();
@@ -434,7 +559,7 @@ void App::draw_log_panel() {
                    event.decode_ms + event.upload_ms, detail.str());
     }
 
-    ImGui::Begin("Log");
+    ImGui::Begin("Log", &show_log_);
     if (ImGui::Button("Clear")) log_entries_.clear();
     ImGui::SameLine();
     if (ImGui::Button("Copy All")) {
@@ -501,6 +626,15 @@ void App::draw_chunk_tab() {
     } else {
         ImGui::TextDisabled("Image size  Waiting for imported image");
     }
+    bool visible = chunk_image_visible(*selected_);
+    ImGui::BeginDisabled(!ready);
+    if (ImGui::Checkbox("Visible on Map", &visible)) {
+        set_chunk_image_visible(*selected_, visible);
+    }
+    ImGui::EndDisabled();
+    if (ready && !visible) {
+        ImGui::TextDisabled("Hidden for review; the concept region is shown on the map.");
+    }
     ImGui::Spacing();
     ImGui::TextDisabled("READY NEIGHBORS");
     ImGui::TextWrapped("%s", ready_neighbor_text(*selected_).c_str());
@@ -553,13 +687,42 @@ void App::draw_chunk_tab() {
 }
 
 void App::draw_prompt_tab() {
-    const ImVec2 size(-1.0F, std::max(160.0F, ImGui::GetContentRegionAvail().y));
-    if (ImGui::InputTextMultiline("##prompt_editor", &prompt_buffer_, size,
-                                  ImGuiInputTextFlags_AllowTabInput)) {
+    ImGui::TextDisabled("GENERATION PROMPT");
+    ImGui::TextWrapped(
+        "Generation combines the shared map style with this chunk's local content.");
+    ImGui::Spacing();
+
+    const float available_height = ImGui::GetContentRegionAvail().y;
+    const float editor_height = std::max(110.0F, (available_height - 150.0F) * 0.5F);
+
+    ImGui::SeparatorText("Global Prompt");
+    ImGui::TextDisabled("Visual style shared by every chunk in this project.");
+    if (ImGui::InputTextMultiline(
+            "##global_prompt_inspector", &global_prompt_buffer_, ImVec2(-1.0F, editor_height),
+            ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_WordWrap)) {
+        global_prompt_dirty_ = true;
+        global_prompt_last_edit_ = ImGui::GetTime();
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) flush_global_prompt();
+
+    ImGui::Spacing();
+    ImGui::SeparatorText("Local Chunk Prompt");
+    ImGui::TextDisabled("Content and layout for chunk %s only.", coord_label(*selected_).c_str());
+    if (ImGui::InputTextMultiline(
+            "##local_chunk_prompt_editor", &prompt_buffer_, ImVec2(-1.0F, editor_height),
+            ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_WordWrap)) {
         prompt_dirty_ = true;
         prompt_last_edit_ = ImGui::GetTime();
     }
     if (ImGui::IsItemDeactivatedAfterEdit()) flush_prompt();
+
+    ImGui::Spacing();
+    if (global_prompt_dirty_ || prompt_dirty_) {
+        ImGui::TextColored(ImVec4(0.92F, 0.72F, 0.30F, 1.0F),
+                           "Unsaved changes - autosaving after 1 minute of inactivity...");
+    } else {
+        ImGui::TextDisabled("Autosaves after 1 min idle or when a field loses focus.");
+    }
 }
 
 void App::draw_seam_tab() {
@@ -700,7 +863,7 @@ void App::draw_project_settings_modal() {
         ImGui::TextDisabled("Project-wide visual style applied to every chunk context.");
         if (ImGui::InputTextMultiline(
                 "##global_prompt_editor", &global_prompt_buffer_, ImVec2(520.0F, 220.0F),
-                ImGuiInputTextFlags_AllowTabInput)) {
+                ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_WordWrap)) {
             global_prompt_dirty_ = true;
             global_prompt_last_edit_ = ImGui::GetTime();
         }
@@ -717,6 +880,44 @@ void App::draw_project_settings_modal() {
     }
     ImGui::EndPopup();
     show_project_settings_ = open && show_project_settings_;
+}
+
+void App::draw_export_progress_modal() {
+    constexpr const char* title = "Exporting Full Map";
+    if (pending_export_request_id_) ImGui::OpenPopup(title);
+    if (!ImGui::BeginPopupModal(
+            title, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize)) {
+        return;
+    }
+    if (!pending_export_request_id_) {
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+
+    ImGui::TextUnformatted("Writing a full-resolution PNG...");
+    ImGui::Spacing();
+    const float fraction = export_progress_total_ == 0U
+        ? 0.0F
+        : std::clamp(static_cast<float>(export_progress_completed_) /
+                         static_cast<float>(export_progress_total_),
+                     0.0F, 1.0F);
+    const std::string overlay = std::to_string(
+        static_cast<int>(std::round(fraction * 100.0F))) + "%";
+    ImGui::ProgressBar(fraction, ImVec2(420.0F, 0.0F), overlay.c_str());
+    ImGui::Spacing();
+    ImGui::TextWrapped("%s", export_progress_message_.empty()
+        ? "Waiting for the export worker..."
+        : export_progress_message_.c_str());
+    ImGui::Spacing();
+    ImGui::TextDisabled("The editor remains responsive. Project files are unchanged.");
+    ImGui::EndPopup();
+}
+
+void App::new_project_dialog() {
+    flush_prompt();
+    flush_global_prompt();
+    show_new_project_ = true;
 }
 
 void App::open_project_dialog() {
@@ -751,12 +952,17 @@ void App::apply_project_snapshot(chunkmap::Project project, bool reset_selection
     const auto previous_selection = reset_selection ? std::optional<chunkmap::ChunkCoord>{} : selected_;
     workspace_ = project.paths.root().parent_path().parent_path();
     project_ = std::move(project);
+    chunk_image_visibility_.assign(
+        static_cast<std::size_t>(project_->config.columns) *
+            static_cast<std::size_t>(project_->config.rows),
+        true);
     selected_.reset();
     prompt_buffer_.clear();
     prompt_dirty_ = false;
     global_prompt_buffer_.clear();
     global_prompt_dirty_ = false;
     seam_analysis_.reset();
+    last_export_path_.reset();
     textures_.clear();
     fit_requested_ = true;
     status_message_ = "Project opened";
@@ -911,6 +1117,28 @@ void App::import_image() {
     error_message_.clear();
 }
 
+void App::export_full_map() {
+    if (!project_ || pending_export_request_id_) return;
+    flush_prompt();
+    flush_global_prompt();
+    const auto suggested = workspace_ / (project_->config.name + ".png");
+    const char* path = tinyfd_saveFileDialog(
+        "Export Full Map", suggested.string().c_str(), 0, nullptr, nullptr);
+    if (!path) return;
+    std::filesystem::path output(path);
+    if (output.extension().empty()) output += ".png";
+    auto request = make_request(chunkmap::CommandType::MapExport);
+    request.payload = chunkmap::MapExportPayload{
+        std::filesystem::absolute(output).lexically_normal(), true};
+    pending_export_request_id_ = request.request_id;
+    export_progress_completed_ = 0U;
+    export_progress_total_ = 0U;
+    export_progress_message_ = "Waiting for the export worker...";
+    command_host_.submit(std::move(request));
+    status_message_ = "Exporting full map...";
+    error_message_.clear();
+}
+
 void App::export_generation_context() {
     if (!project_ || !selected_ || ready_neighbor_count(*selected_) == 0) return;
     flush_prompt();
@@ -1000,7 +1228,16 @@ void App::append_log(std::string source,
 }
 
 void App::poll_commands() {
-    for (auto& completion : command_host_.take_completions()) {
+    auto updates = command_host_.take_updates();
+    for (const auto& progress : updates.progress) {
+        if (progress.type != chunkmap::CommandType::MapExport) continue;
+        if (!pending_export_request_id_) pending_export_request_id_ = progress.request_id;
+        if (*pending_export_request_id_ != progress.request_id) continue;
+        export_progress_completed_ = progress.completed;
+        export_progress_total_ = progress.total;
+        export_progress_message_ = progress.message;
+    }
+    for (auto& completion : updates.completions) {
         const bool from_desktop = completion.request.request_id.rfind("desktop-", 0) == 0;
         std::ostringstream log_detail;
         log_detail << "queue " << std::fixed << std::setprecision(1)
@@ -1020,13 +1257,27 @@ void App::poll_commands() {
                    log_detail.str());
         const bool pending_import = pending_import_request_id_ &&
             completion.request.request_id == *pending_import_request_id_;
-        if (from_desktop && !pending_import) continue;
+        const bool pending_export = pending_export_request_id_ &&
+            completion.request.request_id == *pending_export_request_id_;
+        if (from_desktop && !pending_import && !pending_export) continue;
         if (pending_import) pending_import_request_id_.reset();
+        if (pending_export) pending_export_request_id_.reset();
         if (!completion.result) {
             error_message_ = completion.result.error().message;
             continue;
         }
         auto& result = completion.result.value();
+        if (pending_export) {
+            const auto path = result.data.value("output", std::string{});
+            if (!path.empty()) last_export_path_ = std::filesystem::path(path);
+            const auto size = result.data.value("size", nlohmann::json::array());
+            status_message_ = size.is_array() && size.size() == 2U
+                ? "Full map exported (" + std::to_string(size.at(0).get<int>()) + " x " +
+                      std::to_string(size.at(1).get<int>()) + ")"
+                : "Full map exported";
+            error_message_.clear();
+            continue;
+        }
         if (completion.request.type == chunkmap::CommandType::ProjectCreate &&
             result.project_snapshot) {
             apply_project_snapshot(*result.project_snapshot, true);
@@ -1087,6 +1338,22 @@ void App::poll_commands() {
 bool App::chunk_ready(chunkmap::ChunkCoord coord) const {
     return project_ && project_->config.contains(coord) &&
            path_is_regular_file(project_->paths.chunk_image(coord));
+}
+
+bool App::chunk_image_visible(chunkmap::ChunkCoord coord) const {
+    if (!project_ || !project_->config.contains(coord)) return false;
+    const std::size_t index = static_cast<std::size_t>(coord.y) *
+        static_cast<std::size_t>(project_->config.columns) +
+        static_cast<std::size_t>(coord.x);
+    return index >= chunk_image_visibility_.size() || chunk_image_visibility_[index];
+}
+
+void App::set_chunk_image_visible(chunkmap::ChunkCoord coord, bool visible) {
+    if (!project_ || !project_->config.contains(coord)) return;
+    const std::size_t index = static_cast<std::size_t>(coord.y) *
+        static_cast<std::size_t>(project_->config.columns) +
+        static_cast<std::size_t>(coord.x);
+    if (index < chunk_image_visibility_.size()) chunk_image_visibility_[index] = visible;
 }
 
 int App::ready_neighbor_count(chunkmap::ChunkCoord coord) const {

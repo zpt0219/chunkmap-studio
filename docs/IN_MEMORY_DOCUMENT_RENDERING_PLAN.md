@@ -129,9 +129,9 @@ cache/composite.png
 
 已有项目中的整个 `cache/` 被视为旧版遗留派生物。schema v1 项目通过一次性迁移转换为 schema v2，迁移成功后删除整个 `cache/`。运行时代码只维护 schema v2，不保留长期双格式分支。
 
-### 2.5 整图导出属于未来独立功能
+### 2.5 整图导出属于独立功能
 
-未来可以增加 Desktop 的 `Export Full Map...` 按钮，但它遵守以下契约：
+后续独立实现的 Desktop `Export Full Map...` 遵守以下契约：
 
 - 只在用户明确点击时执行；
 - 输出到用户选择的项目外路径；
@@ -141,7 +141,8 @@ cache/composite.png
 - 应考虑 tiled/streaming export，不能假设整张 RGBA 图片可以常驻内存；
 - 导出失败不影响项目中的正式 chunk。
 
-本次两个阶段都不实现整图导出。现有 `render` 和 `map export` 命令先移除，未来按上述新契约重新设计。
+本次两个阶段当时没有实现整图导出。该功能现已按上述边界独立实现，详见
+[`FULL_MAP_EXPORT_DESIGN.md`](./FULL_MAP_EXPORT_DESIGN.md)；它没有恢复项目 Composite。
 
 ## 3. Desktop 如何显示地图
 

@@ -19,7 +19,7 @@ public:
         chunkmap::CommandRequest request);
     chunkmap::Result<chunkmap::CommandResult> submit_and_wait(
         chunkmap::CommandRequest request);
-    std::vector<chunkmap::CommandCompletion> take_completions();
+    chunkmap::CommandQueueUpdates take_updates();
 
 private:
     chunkmap::DocumentCommandQueue queue_;

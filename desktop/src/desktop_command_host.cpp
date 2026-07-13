@@ -25,8 +25,8 @@ chunkmap::Result<chunkmap::CommandResult> DesktopCommandHost::submit_and_wait(
     return submit(std::move(request)).get();
 }
 
-std::vector<chunkmap::CommandCompletion> DesktopCommandHost::take_completions() {
-    return queue_.take_completions();
+chunkmap::CommandQueueUpdates DesktopCommandHost::take_updates() {
+    return queue_.take_updates();
 }
 
 }  // namespace chunkmap_desktop

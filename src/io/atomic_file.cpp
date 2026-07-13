@@ -86,6 +86,11 @@ Result<void> write_binary(const std::filesystem::path& path,
         reinterpret_cast<const char*>(content.data()), content.size()));
 }
 
+Result<void> replace(const std::filesystem::path& temp,
+                     const std::filesystem::path& target) {
+    return replace_with_temp(temp, target);
+}
+
 Result<std::string> read_text(const std::filesystem::path& path) {
     auto binary = read_binary(path);
     if (!binary) return Result<std::string>::failure(binary.error().code, binary.error().message);

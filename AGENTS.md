@@ -170,7 +170,12 @@ Do not reintroduce a separate generated-image approval or import state.
 ./build/cli/chunkmap --workspace "$PWD" --project <project-name> project validate
 ./build/cli/chunkmap --workspace "$PWD" --project <project-name> --json \
   seam inspect <x,y> --direction right
+./build/cli/chunkmap --workspace "$PWD" --project <project-name> \
+  map export /absolute/path/to/map.png
 ```
+
+Full-map export is explicit, streams to a user-selected path outside the
+project, and must never create project-local Composite or cache files.
 
 ## Change Discipline
 

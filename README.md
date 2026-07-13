@@ -124,9 +124,23 @@ CLI commands refresh the app through `ChangeSet`, without file polling. Image
 generation remains outside the app and can use either Codex with the CLI or a
 manually operated external image generator.
 
-The Project Settings modal edits the Global Prompt shared by every chunk. A
-chunk generation context exports the Global Prompt, the coordinate's Chunk
-Prompt, and a combined `prompt.txt` alongside its template and mask.
+Each Ready chunk has a `Visible on Map` review checkbox in the Chunk Inspector.
+Hiding it reveals that coordinate's Concept region across the chunk's complete
+footprint, including overlap, without changing Ready state, exports, generation
+context, or project files. Visibility resets when the project is opened or reloaded.
+
+The application menu bar owns project lifecycle actions: use File for New,
+Open, Reload, Export Full Map, and Quit; Project for Project Settings; and View
+for map overlays, panel visibility, and layout reset. The compact Map Controls
+panel only keeps the frequent Fit Map, Grid, Coordinates, and Seams controls.
+
+The Prompt Inspector edits both source texts with explicit labels: the Global
+Prompt shared by every chunk and the Local Chunk Prompt for the selected
+coordinate. Edits autosave after 60 seconds without typing or immediately when
+the field loses focus. Long lines soft-wrap to the editor width without changing
+the stored Prompt. Project Settings also exposes the same Global Prompt.
+A chunk generation context exports both sources and a combined `prompt.txt`
+alongside its template and mask.
 
 The same workflow can be used without Codex or the CLI. Select a chunk with at
 least one Ready orthogonal neighbor and use `Export Context` in the Chunk tab.
@@ -168,9 +182,20 @@ Inspect a seam in memory:
 ```
 
 The Desktop draws Ready chunk textures directly with their configured overlap.
-The project deliberately has no Composite file and no automatic whole-map
-export. The explicit full-map export design writes outside the project and is
-documented in [`docs/FULL_MAP_EXPORT_DESIGN.md`](docs/FULL_MAP_EXPORT_DESIGN.md).
+The project deliberately has no Composite file and never exports automatically.
+Use File > Export Full Map in Desktop, or explicitly export a full-resolution
+RGBA PNG through the running Desktop host:
+
+```bash
+./build/cli/chunkmap --workspace "$PWD" --project my-world \
+  map export /absolute/path/to/my-world.png
+```
+
+Add `--force` to replace an existing output. Empty chunks remain transparent,
+the output must be outside `output/my-world/`, and the streaming exporter does
+not create project cache or Composite files. Desktop shows a modal progress
+window while either UI or CLI export work is running. Its contract is documented in
+[`docs/FULL_MAP_EXPORT_DESIGN.md`](docs/FULL_MAP_EXPORT_DESIGN.md).
 
 The persisted project is intentionally sparse:
 

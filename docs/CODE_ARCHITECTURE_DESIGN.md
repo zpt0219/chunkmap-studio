@@ -12,7 +12,7 @@
 - Desktop 未启动时，项目命令返回 `desktop_not_running`，CLI 不直接写文件。
 - 应用负责项目、Prompt、Context handoff、Chunk 导入与 Seam 检查；不负责 AI 生图。
 - Chunk 只有 `Empty` 与 `Ready`，没有 Seed、Candidate、Approval、History 或 Provenance。
-- 没有项目 Composite，也不自动导出整图。
+- 没有项目 Composite，也不自动导出整图；用户可显式导出项目外 PNG。
 
 ## 2. 运行时调用链
 
@@ -145,6 +145,11 @@ overlap 区域，命中测试采用相同顺序。Empty 坐标直接使用 `conc
 Desktop Import 使用异步 command completion，不阻塞 frame loop。Seam preview 也直接从
 内存 `ImageBuffer` 上传临时 texture。
 
+Chunk Inspector 的 `Visible on Map` 是纯 Desktop 会话状态。隐藏 Ready chunk 时 Canvas
+在该 chunk 的完整 footprint（包括 overlap）显示对应 Concept region，但
+`ProjectDocument`、Ready 状态、Context 与导出不受影响；Open/Reload 项目会把全部
+chunk 恢复为可见。
+
 ## 8. 代码目录
 
 ```text
@@ -162,6 +167,10 @@ tests/       Core、command、CLI integration、Desktop smoke
 ```
 
 Core 不依赖 ImGui/OpenGL。CLI 不构造 `ProjectService`。Panel/App 不直接修改正式文件。
+
+显式整图导出同样走 command queue。`MapExport` 在 Core 中按 Desktop 的 chunk 绘制顺序，
+使用有界 RGBA band 和 streaming PNG writer 写到项目目录外；它不修改 document、
+`ChangeSet` 或项目文件。
 
 ## 9. 验证
 

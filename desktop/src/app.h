@@ -20,10 +20,12 @@ public:
     ~App();
 
     void draw();
+    bool exit_requested() const { return exit_requested_; }
 
 private:
+    void draw_main_menu_bar();
     void draw_dockspace();
-    void draw_toolbar();
+    void draw_map_controls();
     void draw_map();
     void draw_inspector();
     void draw_log_panel();
@@ -32,7 +34,9 @@ private:
     void draw_seam_tab();
     void draw_new_project_modal();
     void draw_project_settings_modal();
+    void draw_export_progress_modal();
 
+    void new_project_dialog();
     void open_project_dialog();
     void open_project(const std::filesystem::path& workspace, const std::string& name);
     void reload_project();
@@ -43,6 +47,7 @@ private:
     void fit_map(const ImVec2& available);
     void focus_selected(const ImVec2& available);
     void import_image();
+    void export_full_map();
     void export_generation_context();
     void refresh_seam();
     void poll_commands();
@@ -55,6 +60,8 @@ private:
     chunkmap::CommandRequest make_request(chunkmap::CommandType type) const;
 
     bool chunk_ready(chunkmap::ChunkCoord coord) const;
+    bool chunk_image_visible(chunkmap::ChunkCoord coord) const;
+    void set_chunk_image_visible(chunkmap::ChunkCoord coord, bool visible);
     int ready_neighbor_count(chunkmap::ChunkCoord coord) const;
     std::string ready_neighbor_text(chunkmap::ChunkCoord coord) const;
 
@@ -79,7 +86,12 @@ private:
     bool show_grid_ = true;
     bool show_coordinates_ = true;
     bool show_seams_ = true;
+    std::vector<bool> chunk_image_visibility_;
+    bool show_map_controls_ = true;
+    bool show_inspector_ = true;
+    bool show_log_ = true;
     bool layout_initialized_ = false;
+    bool exit_requested_ = false;
 
     bool show_new_project_ = false;
     bool show_project_settings_ = false;
@@ -102,6 +114,11 @@ private:
     std::string status_message_;
     std::string error_message_;
     std::optional<std::string> pending_import_request_id_;
+    std::optional<std::string> pending_export_request_id_;
+    std::optional<std::filesystem::path> last_export_path_;
+    std::size_t export_progress_completed_ = 0;
+    std::size_t export_progress_total_ = 0;
+    std::string export_progress_message_;
 
     struct LogEntry {
         std::string time;

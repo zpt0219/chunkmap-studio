@@ -1,6 +1,6 @@
 # Full Map Export 设计
 
-状态：准备实现
+状态：已实现
 
 ## 1. 目标
 
@@ -9,7 +9,7 @@
 
 核心契约：
 
-- Desktop 提供 `Export Full Map...` 按钮；
+- Desktop 的 File menu 提供 `Export Full Map...`；
 - CLI 提供 `map export <output.png>`；
 - CLI 仍然只通过 IPC 请求正在运行的 Desktop，不直接读取或修改项目；
 - 导出读取 Desktop 当前的 `ProjectDocument`，因此结果与当前会话一致；
@@ -23,7 +23,7 @@
 
 ### 2.1 Desktop
 
-Toolbar 增加：
+File menu 增加：
 
 ```text
 Export Full Map...
@@ -34,11 +34,13 @@ Export Full Map...
 1. 打开原生 PNG 保存对话框；
 2. 提交 `MapExport` 到 `DocumentCommandQueue`；
 3. worker thread 执行导出，ImGui 主线程保持响应；
-4. 导出期间禁用重复导出按钮，并显示 `Exporting full map...`；
+4. 导出期间禁用重复导出入口，并显示模态进度窗口；
 5. 完成后显示尺寸和输出路径，并提供 `Reveal Exported File`。
 
-v1 不增加进度条、取消、缩放、裁剪或格式选项。Command queue 保证导出看到一个稳定的
-document 顺序；导出完成前，后续正式 mutation 在队列中等待。
+进度按实际工作单元报告：chunk 解码/合成、band 编码和 PNG finalization。Desktop 与 CLI
+触发的导出都会通过 command queue progress event 显示，不使用估算时间或假进度。当前不
+提供取消、缩放、裁剪或格式选项。Command queue 保证导出看到一个稳定的 document 顺序；
+导出完成前，后续正式 mutation 在队列中等待。
 
 ### 2.2 CLI
 
@@ -117,8 +119,9 @@ band_height = clamp(32 MiB / (world_width * 4), 1, chunk_height)
 每个 band 先清成透明，再加载与该 band 相交的 Ready chunk 并按正式绘制顺序 blit，随后将
 band 中的 scanline 顺序写入 PNG encoder。输出内存随地图高度不增长。
 
-当前 `stb_image_write` 的 PNG API 要求完整输入 buffer，不适合该契约。实现时为 Core 增加
-`libpng` 的逐行 writer（链接 `PNG::PNG`），chunk 解码仍复用 `ImageBuffer`。band 算法不得
+当前 `stb_image_write` 的 PNG API 要求完整输入 buffer，不适合该契约。Core 使用 zlib
+实现逐行 PNG writer（链接 `ZLIB::ZLIB`，直接写 IHDR/IDAT/IEND），chunk 解码仍复用
+`ImageBuffer`。band 算法不得
 绕过 `ProjectDocument::image()`，这样外部文件变更检查和当前 document cache 语义仍然有效。
 
 超宽地图还需在分配前检查：
@@ -229,12 +232,12 @@ export_write_failed
 - JSON contract 包含 output、size、Ready/Empty 计数；
 - CLI 无 Desktop 时返回 `desktop_not_running`；
 - CLI 使用 Desktop 当前内存 document；
-- Desktop smoke test 覆盖工具栏入口；
-- 导出在 worker thread 执行，Desktop completion 后恢复按钮状态。
+- Desktop smoke test 覆盖应用启动，Core 与 CLI integration 覆盖正式导出入口；
+- 导出在 worker thread 执行，进度事件单调到达 100%，completion 后关闭弹窗并恢复入口。
 
 ## 9. 实施顺序
 
-1. 引入 `PNG::PNG`，实现并单测 streaming writer；
+1. 引入 `ZLIB::ZLIB`，实现并单测 streaming writer；
 2. 实现 band composer 和像素所有权测试；
 3. 接入 `MapExport` command、codec 和 Dispatcher；
 4. 接入 CLI `map export`；
@@ -251,4 +254,3 @@ export_write_failed
 - 不增加 feather、registration、重采样或颜色校正；
 - 不做 JPEG/WebP、缩放、裁剪、分块包、进度条和取消；
 - 不让 CLI 在 Desktop 未运行时直接访问项目文件。
-

@@ -52,6 +52,19 @@ TEST_CASE("command codec preserves global prompt payload") {
     CHECK(payload->text == "Top-down pixel art");
 }
 
+TEST_CASE("command codec preserves full map export payload") {
+    auto original = request(
+        chunkmap::CommandType::MapExport, "/tmp/work space", "codec-export", "world");
+    original.payload = chunkmap::MapExportPayload{"/tmp/full map.png", true};
+    auto decoded = chunkmap::decode_command_request(chunkmap::encode_command_request(original));
+    REQUIRE(decoded);
+    CHECK(decoded.value().type == chunkmap::CommandType::MapExport);
+    const auto* payload = std::get_if<chunkmap::MapExportPayload>(&decoded.value().payload);
+    REQUIRE(payload != nullptr);
+    CHECK(payload->output == std::filesystem::path("/tmp/full map.png"));
+    CHECK(payload->overwrite);
+}
+
 TEST_CASE("first chunk import requests global prompt exactly once") {
     const auto workspace = std::filesystem::temp_directory_path() /
         "chunkmap-global-prompt-action";
@@ -81,6 +94,48 @@ TEST_CASE("first chunk import requests global prompt exactly once") {
     auto second_result = queue.submit(std::move(second)).get();
     REQUIRE(second_result);
     CHECK_FALSE(second_result.value().data.contains("global_prompt_action"));
+
+    queue.stop_and_drain();
+    std::filesystem::remove_all(workspace, error);
+}
+
+TEST_CASE("full map export command does not publish project changes") {
+    const auto workspace = std::filesystem::temp_directory_path() /
+        "chunkmap-map-export-command";
+    std::error_code error;
+    std::filesystem::remove_all(workspace, error);
+    const auto fixture = std::filesystem::path(CHUNKMAP_TEST_SOURCE_DIR) / "fixtures/chunk.png";
+
+    chunkmap::DocumentCommandQueue queue;
+    auto create = request(chunkmap::CommandType::ProjectCreate, workspace, "export-1", "world");
+    create.payload = chunkmap::ProjectCreatePayload{
+        "world", fixture, 1, 1, 0.15, 0.15};
+    REQUIRE(queue.submit(std::move(create)).get());
+    auto import = request(chunkmap::CommandType::ChunkImport, workspace, "export-2", "world");
+    import.payload = chunkmap::ChunkImagePayload{{0, 0}, fixture};
+    REQUIRE(queue.submit(std::move(import)).get());
+
+    const auto output = workspace / "full-map.png";
+    auto export_request = request(
+        chunkmap::CommandType::MapExport, workspace, "export-3", "world");
+    export_request.payload = chunkmap::MapExportPayload{output, false};
+    auto exported = queue.submit(std::move(export_request)).get();
+    REQUIRE(exported);
+    CHECK(std::filesystem::equivalent(
+        std::filesystem::path(exported.value().data.at("output").get<std::string>()), output));
+    CHECK_FALSE(exported.value().changes.project.has_value());
+    CHECK_FALSE(exported.value().changes.project_changed);
+    CHECK(exported.value().changes.changed_chunks.empty());
+    CHECK(std::filesystem::is_regular_file(output));
+    const auto updates = queue.take_updates();
+    std::vector<chunkmap::CommandProgress> export_progress;
+    for (const auto& progress : updates.progress) {
+        if (progress.request_id == "export-3") export_progress.push_back(progress);
+    }
+    REQUIRE_FALSE(export_progress.empty());
+    CHECK(export_progress.front().completed == 0U);
+    CHECK(export_progress.back().completed == export_progress.back().total);
+    CHECK(export_progress.back().message == "Export complete");
 
     queue.stop_and_drain();
     std::filesystem::remove_all(workspace, error);
