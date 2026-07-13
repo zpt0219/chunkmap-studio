@@ -169,7 +169,8 @@ Inspect a seam in memory:
 
 The Desktop draws Ready chunk textures directly with their configured overlap.
 The project deliberately has no Composite file and no automatic whole-map
-export. A future explicit export feature will write outside the project.
+export. The explicit full-map export design writes outside the project and is
+documented in [`docs/FULL_MAP_EXPORT_DESIGN.md`](docs/FULL_MAP_EXPORT_DESIGN.md).
 
 The persisted project is intentionally sparse:
 

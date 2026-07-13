@@ -3,6 +3,7 @@
 #include "command/command_dispatcher.h"
 
 #include <condition_variable>
+#include <chrono>
 #include <deque>
 #include <future>
 #include <mutex>
@@ -14,6 +15,8 @@ namespace chunkmap {
 struct CommandCompletion {
     CommandRequest request;
     Result<CommandResult> result;
+    double queue_wait_ms = 0.0;
+    double execution_ms = 0.0;
 };
 
 class DocumentCommandQueue {
@@ -31,6 +34,7 @@ private:
     struct PendingCommand {
         CommandRequest request;
         std::promise<Result<CommandResult>> promise;
+        std::chrono::steady_clock::time_point enqueued_at;
     };
 
     void worker_loop();

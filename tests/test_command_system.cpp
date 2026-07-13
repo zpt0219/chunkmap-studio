@@ -122,6 +122,10 @@ TEST_CASE("document command queue executes one FIFO write path") {
     REQUIRE(completions.size() == 4U);
     CHECK(completions[0].request.request_id == "queue-1");
     CHECK(completions[3].request.request_id == "queue-4");
+    for (const auto& completion : completions) {
+        CHECK(completion.queue_wait_ms >= 0.0);
+        CHECK(completion.execution_ms >= 0.0);
+    }
     queue.stop_and_drain();
     std::filesystem::remove_all(workspace, error);
 }

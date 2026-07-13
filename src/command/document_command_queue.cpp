@@ -14,6 +14,7 @@ DocumentCommandQueue::~DocumentCommandQueue() {
 std::future<Result<CommandResult>> DocumentCommandQueue::submit(CommandRequest request) {
     PendingCommand command;
     command.request = std::move(request);
+    command.enqueued_at = std::chrono::steady_clock::now();
     auto future = command.promise.get_future();
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -60,10 +61,17 @@ void DocumentCommandQueue::worker_loop() {
             pending_.pop_front();
         }
 
+        const auto started_at = std::chrono::steady_clock::now();
         auto result = dispatcher_.execute(command.request);
+        const auto completed_at = std::chrono::steady_clock::now();
+        const double queue_wait_ms =
+            std::chrono::duration<double, std::milli>(started_at - command.enqueued_at).count();
+        const double execution_ms =
+            std::chrono::duration<double, std::milli>(completed_at - started_at).count();
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            completed_.push_back({command.request, result});
+            completed_.push_back(
+                {command.request, result, queue_wait_ms, execution_ms});
         }
         command.promise.set_value(std::move(result));
     }

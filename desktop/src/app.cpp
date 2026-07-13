@@ -13,8 +13,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <cstdlib>
 #include <filesystem>
+#include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -86,6 +89,9 @@ void reveal_file(const std::filesystem::path& path) {
 
 App::App(std::filesystem::path workspace, std::optional<std::string> initial_project)
     : workspace_(std::filesystem::absolute(std::move(workspace)).lexically_normal()) {
+    append_log("Desktop", "application start", false, 0.0, workspace_.string());
+    append_log("Renderer", "decoder pool", false, 0.0,
+               std::to_string(textures_.decoder_worker_count()) + " workers");
     if (initial_project) open_project(workspace_, *initial_project);
 }
 
@@ -101,6 +107,7 @@ void App::draw() {
     draw_toolbar();
     draw_map();
     draw_inspector();
+    draw_log_panel();
     draw_new_project_modal();
     draw_project_settings_modal();
     if (prompt_dirty_ && ImGui::GetTime() - prompt_last_edit_ >= 0.5) flush_prompt();
@@ -134,11 +141,14 @@ void App::draw_dockspace() {
         ImGuiID body = dockspace_id;
         ImGuiID toolbar = ImGui::DockBuilderSplitNode(
             body, ImGuiDir_Up, 0.075F, nullptr, &body);
+        ImGuiID log = ImGui::DockBuilderSplitNode(
+            body, ImGuiDir_Down, 0.26F, nullptr, &body);
         ImGuiID inspector = ImGui::DockBuilderSplitNode(
             body, ImGuiDir_Right, 0.29F, nullptr, &body);
         ImGui::DockBuilderDockWindow("Toolbar", toolbar);
         ImGui::DockBuilderDockWindow("Map", body);
         ImGui::DockBuilderDockWindow("Inspector", inspector);
+        ImGui::DockBuilderDockWindow("Log", log);
         ImGui::DockBuilderFinish(dockspace_id);
     }
     ImGui::End();
@@ -248,7 +258,19 @@ void App::draw_map() {
         return ImVec2(origin.x + (x - pan_.x) * zoom_, origin.y + (y - pan_.y) * zoom_);
     };
 
-    GlTexture* concept_texture = textures_.get(project_->paths.concept_source());
+    bool has_empty_chunk = !detailed;
+    if (detailed) {
+        for (int y = 0; y < project_->config.rows && !has_empty_chunk; ++y) {
+            for (int x = 0; x < project_->config.columns; ++x) {
+                if (!chunk_ready({x, y})) {
+                    has_empty_chunk = true;
+                    break;
+                }
+            }
+        }
+    }
+    GlTexture* concept_texture = has_empty_chunk
+        ? textures_.get(project_->paths.concept_source()) : nullptr;
     for (int y = 0; y < project_->config.rows; ++y) {
         for (int x = 0; x < project_->config.columns; ++x) {
             const chunkmap::ChunkCoord coord{x, y};
@@ -398,6 +420,71 @@ void App::draw_inspector() {
         }
         ImGui::EndDisabled();
         ImGui::EndTabBar();
+    }
+    ImGui::End();
+}
+
+void App::draw_log_panel() {
+    for (auto& event : textures_.take_load_events()) {
+        std::ostringstream detail;
+        detail << event.path.string() << " | decode " << std::fixed << std::setprecision(1)
+               << event.decode_ms << " ms | upload " << event.upload_ms << " ms";
+        if (!event.error.empty()) detail << " | " << event.error;
+        append_log("Renderer", "texture load", !event.success,
+                   event.decode_ms + event.upload_ms, detail.str());
+    }
+
+    ImGui::Begin("Log");
+    if (ImGui::Button("Clear")) log_entries_.clear();
+    ImGui::SameLine();
+    if (ImGui::Button("Copy All")) {
+        std::ostringstream output;
+        for (const auto& entry : log_entries_) {
+            output << entry.time << '\t' << entry.source << '\t' << entry.operation << '\t'
+                   << (entry.error ? "ERROR" : "OK") << '\t' << std::fixed
+                   << std::setprecision(1) << entry.duration_ms << " ms\t" << entry.detail << '\n';
+        }
+        ImGui::SetClipboardText(output.str().c_str());
+    }
+    ImGui::SameLine();
+    ImGui::Checkbox("Auto-scroll", &log_auto_scroll_);
+    ImGui::SameLine();
+    ImGui::TextDisabled("%zu operations", log_entries_.size());
+
+    constexpr ImGuiTableFlags flags =
+        ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY |
+        ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("##operation_log", 6, flags, ImVec2(0.0F, 0.0F))) {
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 76.0F);
+        ImGui::TableSetupColumn("Source", ImGuiTableColumnFlags_WidthFixed, 68.0F);
+        ImGui::TableSetupColumn("Operation", ImGuiTableColumnFlags_WidthFixed, 135.0F);
+        ImGui::TableSetupColumn("Result", ImGuiTableColumnFlags_WidthFixed, 54.0F);
+        ImGui::TableSetupColumn("Duration", ImGuiTableColumnFlags_WidthFixed, 76.0F);
+        ImGui::TableSetupColumn("Details");
+        ImGui::TableHeadersRow();
+        for (const auto& entry : log_entries_) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(entry.time.c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(entry.source.c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextUnformatted(entry.operation.c_str());
+            ImGui::TableSetColumnIndex(3);
+            ImGui::TextColored(entry.error ? ImVec4(0.95F, 0.42F, 0.38F, 1.0F)
+                                           : ImVec4(0.40F, 0.78F, 0.52F, 1.0F),
+                               "%s", entry.error ? "ERROR" : "OK");
+            ImGui::TableSetColumnIndex(4);
+            ImGui::Text("%.1f ms", entry.duration_ms);
+            ImGui::TableSetColumnIndex(5);
+            ImGui::TextUnformatted(entry.detail.c_str());
+        }
+        if (log_auto_scroll_ && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 12.0F) {
+            ImGui::SetScrollHereY(1.0F);
+        }
+        ImGui::EndTable();
     }
     ImGui::End();
 }
@@ -633,9 +720,8 @@ void App::draw_project_settings_modal() {
 }
 
 void App::open_project_dialog() {
-    const char* patterns[] = {"*.json"};
     const char* path = tinyfd_openFileDialog(
-        "Open Chunk Map Project", workspace_.string().c_str(), 1, patterns, "Chunk Map Project", 0);
+        "Open Chunk Map Project", workspace_.string().c_str(), 0, nullptr, nullptr, 0);
     if (!path) return;
     const std::filesystem::path project_json(path);
     if (project_json.filename() != "project.json" || project_json.parent_path().parent_path().filename() != "output") {
@@ -891,11 +977,50 @@ chunkmap::CommandRequest App::make_request(chunkmap::CommandType type) const {
     return request;
 }
 
+void App::append_log(std::string source,
+                     std::string operation,
+                     bool error,
+                     double duration_ms,
+                     std::string detail) {
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+#if defined(_WIN32)
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    char time[16]{};
+    std::strftime(time, sizeof(time), "%H:%M:%S", &local);
+    std::clog << '[' << time << "] " << source << ' ' << operation << ' '
+              << (error ? "ERROR" : "OK") << ' ' << std::fixed << std::setprecision(1)
+              << duration_ms << " ms | " << detail << '\n';
+    log_entries_.push_back(
+        {time, std::move(source), std::move(operation), error,
+         duration_ms, std::move(detail)});
+}
+
 void App::poll_commands() {
     for (auto& completion : command_host_.take_completions()) {
+        const bool from_desktop = completion.request.request_id.rfind("desktop-", 0) == 0;
+        std::ostringstream log_detail;
+        log_detail << "queue " << std::fixed << std::setprecision(1)
+                   << completion.queue_wait_ms << " ms | execute "
+                   << completion.execution_ms << " ms";
+        if (completion.request.project_name) {
+            log_detail << " | project " << *completion.request.project_name;
+        }
+        if (!completion.result) {
+            log_detail << " | " << completion.result.error().code << ": "
+                       << completion.result.error().message;
+        }
+        append_log(from_desktop ? "Desktop" : "CLI",
+                   chunkmap::command_name(completion.request.type),
+                   !completion.result,
+                   completion.queue_wait_ms + completion.execution_ms,
+                   log_detail.str());
         const bool pending_import = pending_import_request_id_ &&
             completion.request.request_id == *pending_import_request_id_;
-        if (completion.request.request_id.rfind("desktop-", 0) == 0 && !pending_import) continue;
+        if (from_desktop && !pending_import) continue;
         if (pending_import) pending_import_request_id_.reset();
         if (!completion.result) {
             error_message_ = completion.result.error().message;

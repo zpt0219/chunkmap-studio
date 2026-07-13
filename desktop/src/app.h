@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace chunkmap_desktop {
 
@@ -25,6 +26,7 @@ private:
     void draw_toolbar();
     void draw_map();
     void draw_inspector();
+    void draw_log_panel();
     void draw_chunk_tab();
     void draw_prompt_tab();
     void draw_seam_tab();
@@ -44,6 +46,11 @@ private:
     void export_generation_context();
     void refresh_seam();
     void poll_commands();
+    void append_log(std::string source,
+                    std::string operation,
+                    bool error,
+                    double duration_ms,
+                    std::string detail);
     void apply_project_snapshot(chunkmap::Project project, bool reset_selection);
     chunkmap::CommandRequest make_request(chunkmap::CommandType type) const;
 
@@ -95,6 +102,17 @@ private:
     std::string status_message_;
     std::string error_message_;
     std::optional<std::string> pending_import_request_id_;
+
+    struct LogEntry {
+        std::string time;
+        std::string source;
+        std::string operation;
+        bool error = false;
+        double duration_ms = 0.0;
+        std::string detail;
+    };
+    std::vector<LogEntry> log_entries_;
+    bool log_auto_scroll_ = true;
 };
 
 }  // namespace chunkmap_desktop
