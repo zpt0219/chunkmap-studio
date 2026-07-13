@@ -50,6 +50,12 @@ Open an existing project in the running Desktop host with:
 
 ## Project And Prompt Workflow
 
+Before generating or modifying any Global or Local Prompt, read
+`docs/PROMPT_AUTHORING_GUIDE.md` completely. This is mandatory. The guide is the
+semantic source of truth; `prompts.schema.json` only defines the JSON transport
+shape. `concept context` also returns an `authoring_guide` path to the same guide
+inside the project handoff for self-contained agent workflows.
+
 Create a project when the user asks for a new map:
 
 ```bash
@@ -67,7 +73,8 @@ Export concept context before writing initial prompts:
 
 The concept image and region crops are only for understanding world layout and
 writing text prompts. They must not be used as image references when generating
-detailed chunks. Import generated prompts with:
+detailed chunks. Read the returned `authoring_guide` before interpreting Concept
+symbols or writing Local Prompts. Import generated prompts with:
 
 ```bash
 ./build/cli/chunkmap --workspace "$PWD" --project <project-name> \
@@ -79,7 +86,7 @@ The input shape is:
 ```json
 {
   "prompts": [
-    {"x": 0, "y": 0, "prompt": "Detailed description for this chunk."}
+    {"x": 0, "y": 0, "prompt": "Short regional terrain and purpose brief."}
   ]
 }
 ```
@@ -105,8 +112,9 @@ Import one or more user-provided map anchors:
 ```
 
 The first successful import returns a `global_prompt_action`. When an agent sees
-it, inspect the returned formal `seed_image`, write a project-wide visual style
-description that does not repeat the chunk's local layout, and import it with:
+it, read the returned `authoring_guide` completely before inspecting the formal
+`seed_image`. Write a project-wide visual style description that follows the
+guide and does not repeat the chunk's local layout, then import it with:
 
 ```bash
 ./build/cli/chunkmap --workspace "$PWD" --project <project-name> \

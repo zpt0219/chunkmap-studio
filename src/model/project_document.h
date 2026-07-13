@@ -36,6 +36,7 @@ public:
     Result<const ImageBuffer*> image(ChunkCoord coord) const;
     void replace_image(ChunkCoord coord, ImageBuffer image);
     void remove_image(ChunkCoord coord);
+    void reset_empty_grid();
     int ready_count() const;
     int prompt_count() const;
     int cached_image_count() const;

@@ -45,6 +45,9 @@ WorkspaceHandoffPaths::WorkspaceHandoffPaths(
 std::filesystem::path WorkspaceHandoffPaths::root() const {
     return workspace_.handoff_root(project_name_);
 }
+std::filesystem::path WorkspaceHandoffPaths::prompt_authoring_guide() const {
+    return root() / "prompt-authoring-guide.md";
+}
 std::filesystem::path WorkspaceHandoffPaths::concept_dir() const { return root() / "concept"; }
 std::filesystem::path WorkspaceHandoffPaths::concept_regions_dir() const {
     return concept_dir() / "regions";

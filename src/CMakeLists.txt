@@ -15,6 +15,14 @@ FetchContent_MakeAvailable(nlohmann_json stb)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
 
+file(READ "${CMAKE_SOURCE_DIR}/docs/PROMPT_AUTHORING_GUIDE.md"
+    CHUNKMAP_PROMPT_AUTHORING_GUIDE)
+configure_file(
+    project/prompt_authoring_guide.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/prompt_authoring_guide.h
+    @ONLY
+)
+
 add_library(chunkmap_stb INTERFACE)
 target_include_directories(chunkmap_stb INTERFACE ${stb_SOURCE_DIR})
 
@@ -42,6 +50,9 @@ add_library(chunkmap_core STATIC
 
 target_include_directories(chunkmap_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_include_directories(chunkmap_core PRIVATE
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 target_link_libraries(chunkmap_core PUBLIC
     nlohmann_json::nlohmann_json

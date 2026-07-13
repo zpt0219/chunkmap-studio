@@ -3,6 +3,7 @@
 #include "image/image_buffer.h"
 #include "image/image_pipeline.h"
 #include "io/atomic_file.h"
+#include "prompt_authoring_guide.h"
 
 #include <nlohmann/json.hpp>
 
@@ -99,6 +100,37 @@ Result<void> ensure_directory(const std::filesystem::path& path) {
             "create_directory_failed", "Unable to create directory: " + path.string());
     }
     return Result<void>::success();
+}
+
+Result<bool> directory_has_regular_files(const std::filesystem::path& path,
+                                         const std::string& extension) {
+    std::error_code error;
+    std::filesystem::directory_iterator current(path, error);
+    if (error) {
+        return Result<bool>::failure(
+            "directory_read_failed", "Unable to inspect directory: " + path.string());
+    }
+    const std::filesystem::directory_iterator end;
+    for (; current != end; current.increment(error)) {
+        if (error) {
+            return Result<bool>::failure(
+                "directory_read_failed", "Unable to inspect directory: " + path.string());
+        }
+        std::error_code status_error;
+        const bool regular = current->is_regular_file(status_error);
+        if (status_error) {
+            return Result<bool>::failure(
+                "directory_read_failed", "Unable to inspect file: " + current->path().string());
+        }
+        if (regular && current->path().extension() == extension) {
+            return Result<bool>::success(true);
+        }
+    }
+    if (error) {
+        return Result<bool>::failure(
+            "directory_read_failed", "Unable to inspect directory: " + path.string());
+    }
+    return Result<bool>::success(false);
 }
 
 std::string prompt_text(const json& item) {
@@ -240,6 +272,38 @@ Result<Project> ProjectService::open_project(const std::string& project_name) co
     return loaded;
 }
 
+Result<void> ProjectService::update_grid(Project& project, int columns, int rows) {
+    if (columns == project.config.columns && rows == project.config.rows) {
+        return Result<void>::success();
+    }
+    Project updated = project;
+    updated.config.columns = columns;
+    updated.config.rows = rows;
+    auto valid = validate_config(updated.config);
+    if (!valid) return valid;
+    if (project.config.has_chunk_size()) {
+        return Result<void>::failure(
+            "grid_locked", "Grid cannot change after the first chunk image is imported.");
+    }
+    auto chunks = directory_has_regular_files(project.paths.chunks_dir(), ".png");
+    if (!chunks) return Result<void>::failure(chunks.error().code, chunks.error().message);
+    if (chunks.value()) {
+        return Result<void>::failure(
+            "grid_locked", "Grid cannot change while chunk images exist.");
+    }
+    auto prompts = directory_has_regular_files(project.paths.prompts_dir(), ".md");
+    if (!prompts) return Result<void>::failure(prompts.error().code, prompts.error().message);
+    if (prompts.value()) {
+        return Result<void>::failure(
+            "grid_has_prompts", "Clear local chunk prompts before changing the grid.");
+    }
+
+    auto saved = repository_.save(updated);
+    if (!saved) return saved;
+    project.config = std::move(updated.config);
+    return Result<void>::success();
+}
+
 Result<ProjectStatus> ProjectService::status(const Project& project) const {
     ProjectStatus result;
     result.config = project.config;
@@ -337,6 +401,24 @@ Result<void> ProjectService::write_global_prompt(const Project& project,
     return atomic_file::write_text(project.paths.global_prompt(), text);
 }
 
+Result<std::filesystem::path> ProjectService::export_prompt_authoring_guide(
+    const Project& project) const {
+    WorkspaceHandoffPaths handoff(
+        repository_.workspace_paths().root(), project.config.name);
+    auto created = ensure_directory(handoff.root());
+    if (!created) {
+        return Result<std::filesystem::path>::failure(
+            created.error().code, created.error().message);
+    }
+    const auto output = handoff.prompt_authoring_guide();
+    auto written = atomic_file::write_text(output, std::string(kPromptAuthoringGuide));
+    if (!written) {
+        return Result<std::filesystem::path>::failure(
+            written.error().code, written.error().message);
+    }
+    return Result<std::filesystem::path>::success(output);
+}
+
 Result<void> ProjectService::import_prompts(const Project& project,
                                             const std::filesystem::path& json_path) const {
     auto content = atomic_file::read_text(json_path);
@@ -396,11 +478,15 @@ Result<ConceptContext> ProjectService::export_concept_context(const Project& pro
     std::filesystem::remove_all(handoff.concept_dir(), error);
     auto created = ensure_directory(handoff.concept_regions_dir());
     if (!created) return Result<ConceptContext>::failure(created.error().code, created.error().message);
+    auto guide = export_prompt_authoring_guide(project);
+    if (!guide) return Result<ConceptContext>::failure(
+        guide.error().code, guide.error().message);
 
     ConceptContext context;
     context.concept_image = project.paths.concept_source();
     context.regions_dir = handoff.concept_regions_dir();
     context.manifest = handoff.concept_dir() / "manifest.json";
+    context.authoring_guide = guide.take_value();
     context.prompts_schema = handoff.concept_dir() / "prompts.schema.json";
     json region_entries = json::array();
     for (int y = 0; y < project.config.rows; ++y) {
@@ -418,6 +504,7 @@ Result<ConceptContext> ProjectService::export_concept_context(const Project& pro
         {"concept_image", context.concept_image.string()},
         {"grid", {{"columns", project.config.columns}, {"rows", project.config.rows}}},
         {"regions", region_entries},
+        {"authoring_guide", context.authoring_guide.string()},
         {"prompts_schema", context.prompts_schema.string()},
         {"write_command", "chunkmap --project " + project.config.name +
             " prompts import --input <prompts.json>"},

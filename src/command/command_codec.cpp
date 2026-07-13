@@ -13,6 +13,7 @@ using nlohmann::json;
 Result<CommandType> parse_type(const std::string& name) {
     for (const auto type : {
              CommandType::ProjectCreate, CommandType::ProjectOpen,
+             CommandType::ProjectGridSet,
              CommandType::ProjectStatus, CommandType::ProjectValidate,
              CommandType::ConceptContext, CommandType::ConceptSliceExport,
              CommandType::PromptsImport,
@@ -65,6 +66,8 @@ json encode_command_request(const CommandRequest& request) {
                        {"columns", value.columns}, {"rows", value.rows},
                        {"overlap_ratio", {value.horizontal_overlap_ratio,
                                           value.vertical_overlap_ratio}}};
+        } else if constexpr (std::is_same_v<T, ProjectGridSetPayload>) {
+            payload = {{"columns", value.columns}, {"rows", value.rows}};
         } else if constexpr (std::is_same_v<T, CoordPayload>) {
             payload = {{"coord", coord_value(value.coord)}};
         } else if constexpr (std::is_same_v<T, PromptSetPayload>) {
@@ -125,6 +128,10 @@ Result<CommandRequest> decode_command_request(const json& value) {
             request.payload = std::move(parsed);
             break;
         }
+        case CommandType::ProjectGridSet:
+            request.payload = ProjectGridSetPayload{
+                payload.at("columns").get<int>(), payload.at("rows").get<int>()};
+            break;
         case CommandType::PromptSet:
             request.payload = PromptSetPayload{
                 parse_coord(payload.at("coord")), payload.at("text").get<std::string>()};

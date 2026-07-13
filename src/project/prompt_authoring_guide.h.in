@@ -1,0 +1,10 @@
+#pragma once
+
+#include <string_view>
+
+namespace chunkmap {
+
+inline constexpr std::string_view kPromptAuthoringGuide =
+    R"PROMPT_GUIDE(@CHUNKMAP_PROMPT_AUTHORING_GUIDE@)PROMPT_GUIDE";
+
+}  // namespace chunkmap

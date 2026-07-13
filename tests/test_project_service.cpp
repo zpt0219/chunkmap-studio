@@ -89,6 +89,42 @@ TEST_CASE("project creation persists only minimal formal inputs") {
     CHECK(service.validate(project).ok());
 }
 
+TEST_CASE("empty project grid can change before the first chunk import") {
+    TempWorkspace workspace;
+    chunkmap::ProjectService service(workspace.path);
+    auto project = create_project(workspace, service);
+    REQUIRE(service.write_global_prompt(project, "Shared pixel style").ok());
+
+    REQUIRE(service.update_grid(project, 5, 4).ok());
+    CHECK(project.config.columns == 5);
+    CHECK(project.config.rows == 4);
+    auto reopened = service.open_project(project.config.name);
+    REQUIRE(reopened);
+    CHECK(reopened.value().config.columns == 5);
+    CHECK(reopened.value().config.rows == 4);
+    auto global = service.read_global_prompt(reopened.value());
+    REQUIRE(global);
+    CHECK(global.value() == "Shared pixel style");
+}
+
+TEST_CASE("project grid locks when local prompts or chunk images exist") {
+    TempWorkspace workspace;
+    chunkmap::ProjectService service(workspace.path);
+    auto project = create_project(workspace, service);
+
+    REQUIRE(service.write_prompt(project, {0, 0}, "Northern region").ok());
+    auto with_prompt = service.update_grid(project, 4, 3);
+    REQUIRE_FALSE(with_prompt);
+    CHECK(with_prompt.error().code == "grid_has_prompts");
+    REQUIRE(service.write_prompt(project, {0, 0}, "").ok());
+
+    const auto image = workspace.make_image("grid-lock.png", 9, 7);
+    REQUIRE(service.import_chunk_image(project, {0, 0}, image).ok());
+    auto with_chunk = service.update_grid(project, 4, 3);
+    REQUIRE_FALSE(with_chunk);
+    CHECK(with_chunk.error().code == "grid_locked");
+}
+
 TEST_CASE("global prompt can be edited independently from chunk prompts") {
     TempWorkspace workspace;
     chunkmap::ProjectService service(workspace.path);
@@ -305,6 +341,7 @@ TEST_CASE("concept context exports regions schema and manifest") {
     REQUIRE(context.ok());
     CHECK(context.value().regions.size() == 6);
     CHECK(std::filesystem::is_regular_file(context.value().manifest));
+    CHECK(std::filesystem::is_regular_file(context.value().authoring_guide));
     CHECK(std::filesystem::is_regular_file(context.value().prompts_schema));
     const auto expected_handoff = workspace.path / ".chunkmap" / "handoff" / "test-world";
     CHECK(context.value().manifest.string().rfind(expected_handoff.string(), 0) == 0);
@@ -313,7 +350,12 @@ TEST_CASE("concept context exports regions schema and manifest") {
     auto manifest = chunkmap::atomic_file::read_text(context.value().manifest);
     REQUIRE(manifest.ok());
     CHECK(manifest.value().find("concept_image") != std::string::npos);
+    CHECK(manifest.value().find("authoring_guide") != std::string::npos);
     CHECK(manifest.value().find("prompts import") != std::string::npos);
+    auto guide = chunkmap::atomic_file::read_text(context.value().authoring_guide);
+    REQUIRE(guide.ok());
+    CHECK(guide.value().find("Preserve model freedom") != std::string::npos);
+    CHECK(guide.value().find("Interpret Concept symbols semantically") != std::string::npos);
 }
 
 TEST_CASE("concept slice export writes one external grid region") {

@@ -37,6 +37,15 @@ Switch a running Desktop instance to an existing project:
 ./build/cli/chunkmap --workspace "$PWD" project open my-world
 ```
 
+Before importing the first chunk image, the Concept grid can be corrected without
+recreating the project. Local chunk prompts must still be empty; the Global Prompt
+is preserved:
+
+```bash
+./build/cli/chunkmap --project my-world \
+  project grid --columns 4 --rows 4
+```
+
 Import a user image into any chunk. The first imported image determines the
 project chunk size; later imports use the same validation and deterministic
 1px edge normalization as generated images:
@@ -63,6 +72,11 @@ Read or replace one Prompt:
 
 Bulk Prompt import uses this shape and overwrites only the listed coordinates:
 
+Prompt generation follows [`docs/PROMPT_AUTHORING_GUIDE.md`](docs/PROMPT_AUTHORING_GUIDE.md).
+The guide separates reusable Global visual rules from short Local regional intent,
+interprets Concept icons semantically rather than literally, and leaves minor
+objects and decorative detail to the image model.
+
 ```json
 {
   "prompts": [
@@ -86,9 +100,10 @@ Read or replace the project-wide visual style Prompt:
 ```
 
 The first successful `chunk import` reports a `global_prompt_action` in JSON
-mode. Codex should analyze the returned formal `seed_image`, describe only its
-reusable visual style, and write the result with `global-prompt set`. The seed
-identity is not persisted; users can edit the Global Prompt at any time.
+mode with both `authoring_guide` and `seed_image`. Codex must read the guide,
+analyze the formal Seed, describe only its reusable visual style, and write the
+result with `global-prompt set`. The seed identity is not persisted; users can
+edit the Global Prompt at any time.
 
 All commands accept `--workspace <path>` and `--json`.
 
@@ -133,14 +148,20 @@ not change Ready state, exports, generation context, session state, or project f
 to a user-selected PNG outside the project without exporting the other regions.
 
 The application menu bar owns project lifecycle actions: use File for New,
-Open, Reload, Export Full Map, and Quit; Project for Project Settings; and View
-for map overlays, panel visibility, and layout reset. The compact Map Controls
+Open, Reload, Export Full Map, and Quit; Project for Project Settings and the
+dedicated Change Grid action; and View for map overlays, panel visibility, and
+layout reset. Window size, position, and docked panel layout persist in the user's
+platform configuration directory; smoke tests do not read or write these settings.
+The compact Map Controls
 panel provides Reset Scale, Fit Map, and one Overlays switch for Grid, Coordinates,
 and Seams. Reset Scale restores 1:1 at the map's top-left; Fit Map uses a continuous
 scale and centers the map. The displayed `Scale: 0.000x` value always reflects the
 actual view. Mouse-wheel zoom moves through discrete scale presets while preserving
 the world point under the cursor. Drag with either the middle or right mouse button
 to pan. Coordinate labels remain visible at every scale while Overlays is enabled.
+Project > Change Grid exposes Concept Grid columns and rows in a dedicated dialog
+until the first chunk image establishes the project chunk size. Grid changes keep
+the Concept and Global Prompt, and require the Local Chunk Prompts to be empty.
 
 The Log panel follows the conventional three-line mouse-wheel step so short log
 views remain controllable. Trackpad input stays continuous and proportional to the
@@ -169,6 +190,10 @@ Export the Concept Map and region crops for prompt planning:
 ```bash
 ./build/cli/chunkmap --project my-world concept context --json
 ```
+
+The response and manifest include an `authoring_guide` path. The Core embeds the
+versioned Markdown source and exports it to the project handoff, so this workflow
+remains self-contained even when the map workspace is outside the source tree.
 
 Export a self-contained generation context from all available orthogonal
 neighbors, then write the generated image as the official chunk:

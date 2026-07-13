@@ -33,6 +33,7 @@ struct ConceptContext {
     std::filesystem::path manifest;
     std::filesystem::path concept_image;
     std::filesystem::path regions_dir;
+    std::filesystem::path authoring_guide;
     std::filesystem::path prompts_schema;
     std::vector<std::filesystem::path> regions;
 };
@@ -68,6 +69,7 @@ public:
 
     Result<Project> create_project(const CreateProjectRequest& request);
     Result<Project> open_project(const std::string& project_name) const;
+    Result<void> update_grid(Project& project, int columns, int rows);
     Result<ProjectStatus> status(const Project& project) const;
     Result<void> validate(const Project& project) const;
 
@@ -84,6 +86,8 @@ public:
                                 const std::filesystem::path& json_path) const;
     Result<std::string> read_global_prompt(const Project& project) const;
     Result<void> write_global_prompt(const Project& project, std::string_view text) const;
+    Result<std::filesystem::path> export_prompt_authoring_guide(
+        const Project& project) const;
     Result<ConceptContext> export_concept_context(const Project& project) const;
     Result<ConceptSliceExportResult> export_concept_slice(
         const Project& project,

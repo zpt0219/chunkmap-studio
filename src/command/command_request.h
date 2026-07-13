@@ -12,6 +12,7 @@ namespace chunkmap {
 enum class CommandType {
     ProjectCreate,
     ProjectOpen,
+    ProjectGridSet,
     ProjectStatus,
     ProjectValidate,
     ConceptContext,
@@ -37,6 +38,11 @@ struct ProjectCreatePayload {
     int rows = 0;
     double horizontal_overlap_ratio = 0.15;
     double vertical_overlap_ratio = 0.15;
+};
+
+struct ProjectGridSetPayload {
+    int columns = 0;
+    int rows = 0;
 };
 
 struct CoordPayload {
@@ -85,6 +91,7 @@ struct ConceptSliceExportPayload {
 using CommandPayload = std::variant<
     std::monostate,
     ProjectCreatePayload,
+    ProjectGridSetPayload,
     CoordPayload,
     PromptSetPayload,
     GlobalPromptSetPayload,

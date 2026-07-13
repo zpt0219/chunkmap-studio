@@ -62,6 +62,12 @@ Mutation 顺序是：
 
 持久化失败时不发布内存变化。
 
+Concept Grid 的 columns/rows 可在第一张 Chunk 图片导入前通过 `ProjectGridSet`
+修改。该命令要求 `chunk_size` 尚未建立、Chunks 与 Local Prompts 均为空；成功后原子
+更新 `project.json` 并重建空的 `ProjectDocument` 坐标数组。Concept 与 Global Prompt
+保持不变。第一张 Chunk 图片建立尺寸后，Grid 永久锁定。
+Desktop 入口为独立的 `Project > Change Grid...` modal，不嵌入 Project Settings。
+
 ## 4. 最小持久化格式
 
 ```text
@@ -109,6 +115,11 @@ Concept 与 Chunk Context 导出到：
 
 它们可以随时覆盖或删除。Context 中的 Concept regions 只用于理解布局、写 Prompt；
 详细 Chunk 生成只使用 Ready 邻居形成的 template 与 mask。
+
+`docs/PROMPT_AUTHORING_GUIDE.md` 是 Global/Local Prompt 语义的单一规范源。CMake 在
+构建时将它嵌入 Core；`concept context` 与首张 Chunk import 会把同一内容写到
+handoff 的 `prompt-authoring-guide.md`，并通过 command JSON/manifest 返回
+`authoring_guide` 路径。JSON Schema 只负责传输结构，不重复语义规范。
 
 Chunk Inspector 的 `Export Concept Slice...` 是独立的显式导出：它只裁切选中坐标的
 Concept region，写入用户选择的项目外 PNG，不创建整套 regions，也不改变项目状态。

@@ -98,6 +98,13 @@ void ProjectDocument::remove_image(ChunkCoord coord) {
     state.image_modified = {};
 }
 
+void ProjectDocument::reset_empty_grid() {
+    chunks_.assign(
+        static_cast<std::size_t>(config().columns) * static_cast<std::size_t>(config().rows),
+        ChunkDocument{});
+    access_clock_ = 0;
+}
+
 int ProjectDocument::ready_count() const {
     int count = 0;
     for (const auto& state : chunks_) count += state.ready ? 1 : 0;

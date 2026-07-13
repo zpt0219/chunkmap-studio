@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -35,6 +36,80 @@ std::optional<std::string> option_value(int argc, char** argv, std::string_view 
         if (std::string_view(argv[i]) == option) return std::string(argv[i + 1]);
     }
     return std::nullopt;
+}
+
+struct WindowState {
+    int x = 0;
+    int y = 0;
+    int width = 1400;
+    int height = 900;
+    bool has_position = false;
+    bool maximized = false;
+};
+
+std::filesystem::path desktop_config_directory() {
+#if defined(__APPLE__)
+    if (const char* home = std::getenv("HOME")) {
+        return std::filesystem::path(home) / "Library" / "Application Support" /
+               "ChunkMap Studio";
+    }
+#elif defined(_WIN32)
+    if (const char* appdata = std::getenv("APPDATA")) {
+        return std::filesystem::path(appdata) / "ChunkMap Studio";
+    }
+#else
+    if (const char* xdg_config = std::getenv("XDG_CONFIG_HOME")) {
+        return std::filesystem::path(xdg_config) / "chunkmap-studio";
+    }
+    if (const char* home = std::getenv("HOME")) {
+        return std::filesystem::path(home) / ".config" / "chunkmap-studio";
+    }
+#endif
+    return std::filesystem::current_path() / ".chunkmap" / "desktop";
+}
+
+WindowState load_window_state(const std::filesystem::path& path) {
+    WindowState state;
+    std::ifstream input(path);
+    int version = 0;
+    int has_position = 0;
+    int maximized = 0;
+    if (!(input >> version >> state.x >> state.y >> state.width >> state.height >>
+          has_position >> maximized) ||
+        version != 1 || state.width < 640 || state.height < 480) {
+        return WindowState{};
+    }
+    state.has_position = has_position != 0;
+    state.maximized = maximized != 0;
+    return state;
+}
+
+void save_window_state(const std::filesystem::path& path, GLFWwindow* window) {
+    WindowState state;
+    glfwGetWindowPos(window, &state.x, &state.y);
+    glfwGetWindowSize(window, &state.width, &state.height);
+    state.has_position = true;
+    state.maximized = glfwGetWindowAttrib(window, GLFW_MAXIMIZED) == GLFW_TRUE;
+
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    if (error) return;
+    const auto temporary = path.string() + ".tmp";
+    {
+        std::ofstream output(temporary, std::ios::trunc);
+        if (!output) return;
+        output << 1 << ' ' << state.x << ' ' << state.y << ' '
+               << state.width << ' ' << state.height << ' '
+               << (state.has_position ? 1 : 0) << ' '
+               << (state.maximized ? 1 : 0) << '\n';
+        if (!output) return;
+    }
+    std::filesystem::rename(temporary, path, error);
+    if (error) {
+        std::filesystem::remove(path, error);
+        error.clear();
+        std::filesystem::rename(temporary, path, error);
+    }
 }
 
 void apply_editor_style() {
@@ -83,6 +158,18 @@ int main(int argc, char** argv) {
     const auto workspace = option_value(argc, argv, "--workspace")
         .value_or(std::filesystem::current_path().string());
     const auto initial_project = option_value(argc, argv, "--project");
+    const auto config_directory = desktop_config_directory();
+    const auto imgui_ini_path = config_directory / "imgui.ini";
+    const auto window_state_path = config_directory / "window-state.ini";
+    const WindowState window_state = smoke_test
+        ? WindowState{}
+        : load_window_state(window_state_path);
+    const std::string imgui_ini_filename = imgui_ini_path.string();
+
+    if (!smoke_test) {
+        std::error_code error;
+        std::filesystem::create_directories(config_directory, error);
+    }
 
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit()) return EXIT_FAILURE;
@@ -95,11 +182,15 @@ int main(int argc, char** argv) {
     if (smoke_test) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
     GLFWwindow* window = glfwCreateWindow(
-        1400, 900, "AI Chunk Map Studio", nullptr, nullptr);
+        window_state.width, window_state.height, "AI Chunk Map Studio", nullptr, nullptr);
     if (!window) {
         glfwTerminate();
         return EXIT_FAILURE;
     }
+    if (window_state.has_position) {
+        glfwSetWindowPos(window, window_state.x, window_state.y);
+    }
+    if (window_state.maximized) glfwMaximizeWindow(window);
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(smoke_test ? 0 : 1);
@@ -109,7 +200,7 @@ int main(int argc, char** argv) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.IniFilename = smoke_test ? nullptr : "imgui.ini";
+    io.IniFilename = smoke_test ? nullptr : imgui_ini_filename.c_str();
     ImGui::StyleColorsDark();
     apply_editor_style();
 
@@ -151,6 +242,10 @@ int main(int argc, char** argv) {
         exit_code = EXIT_FAILURE;
     }
 
+    if (!smoke_test) {
+        ImGui::SaveIniSettingsToDisk(imgui_ini_filename.c_str());
+        save_window_state(window_state_path, window);
+    }
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

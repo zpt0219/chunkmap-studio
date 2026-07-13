@@ -115,6 +115,7 @@ void App::draw() {
     if (show_log_) draw_log_panel();
     draw_new_project_modal();
     draw_project_settings_modal();
+    draw_change_grid_modal();
     draw_export_progress_modal();
     if (prompt_dirty_ &&
         ImGui::GetTime() - prompt_last_edit_ >= kPromptAutosaveDelaySeconds) {
@@ -146,6 +147,7 @@ void App::draw_main_menu_bar() {
     bool reload = false;
     bool export_map = false;
     bool project_settings = false;
+    bool change_grid = false;
     bool fit_map = false;
     bool focus_selection = false;
     bool reset_layout = false;
@@ -167,6 +169,7 @@ void App::draw_main_menu_bar() {
         }
         if (ImGui::BeginMenu("Project", project_.has_value())) {
             project_settings = ImGui::MenuItem("Project Settings...");
+            change_grid = ImGui::MenuItem("Change Grid...");
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
@@ -209,13 +212,19 @@ void App::draw_main_menu_bar() {
     if (reload) reload_project();
     if (export_map) export_full_map();
     if (project_settings) show_project_settings_ = true;
+    if (change_grid && project_) {
+        change_grid_columns_ = project_->config.columns;
+        change_grid_rows_ = project_->config.rows;
+        change_grid_error_.clear();
+        show_change_grid_ = true;
+    }
     if (fit_map) fit_requested_ = true;
     if (focus_selection) focus_selected(last_canvas_size_);
     if (reset_layout) {
         show_map_controls_ = true;
         show_inspector_ = true;
         show_log_ = true;
-        layout_initialized_ = false;
+        reset_layout_requested_ = true;
     }
     if (quit) exit_requested_ = true;
 }
@@ -236,9 +245,10 @@ void App::draw_dockspace() {
     ImGui::Begin("##ChunkMapDockspaceHost", nullptr, host_flags);
     ImGui::PopStyleVar(3);
     const ImGuiID dockspace_id = ImGui::GetID(kDockspaceName);
+    const bool needs_default_layout = reset_layout_requested_ ||
+        (!layout_initialized_ && ImGui::DockBuilderGetNode(dockspace_id) == nullptr);
     ImGui::DockSpace(dockspace_id, ImVec2(0.0F, 0.0F));
-    if (!layout_initialized_) {
-        layout_initialized_ = true;
+    if (needs_default_layout) {
         ImGui::DockBuilderRemoveNode(dockspace_id);
         ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
         ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
@@ -258,6 +268,8 @@ void App::draw_dockspace() {
         ImGui::DockBuilderDockWindow("Log", log);
         ImGui::DockBuilderFinish(dockspace_id);
     }
+    layout_initialized_ = true;
+    reset_layout_requested_ = false;
     ImGui::End();
 }
 
@@ -920,6 +932,71 @@ void App::draw_project_settings_modal() {
     show_project_settings_ = open && show_project_settings_;
 }
 
+void App::draw_change_grid_modal() {
+    if (show_change_grid_) ImGui::OpenPopup("Change Grid");
+    bool open = show_change_grid_;
+    if (!ImGui::BeginPopupModal("Change Grid", &open, ImGuiWindowFlags_AlwaysAutoResize)) {
+        show_change_grid_ = open;
+        return;
+    }
+    if (project_) {
+        ImGui::Text("Current grid  %d x %d", project_->config.columns, project_->config.rows);
+        ImGui::TextDisabled(
+            "Change how the Concept Map is divided before importing the first chunk image.");
+        ImGui::Spacing();
+        const bool grid_editable = !project_->config.has_chunk_size();
+        ImGui::BeginDisabled(!grid_editable);
+        ImGui::SetNextItemWidth(120.0F);
+        ImGui::InputInt("Columns", &change_grid_columns_);
+        ImGui::SetNextItemWidth(120.0F);
+        ImGui::InputInt("Rows", &change_grid_rows_);
+        ImGui::EndDisabled();
+        if (grid_editable) {
+            ImGui::TextDisabled("Local chunk prompts must be empty before changing the grid.");
+        } else {
+            ImGui::TextDisabled("Grid is locked because a chunk image has already been imported.");
+        }
+        if (!change_grid_error_.empty()) {
+            ImGui::TextColored(
+                ImVec4(0.95F, 0.42F, 0.38F, 1.0F), "%s", change_grid_error_.c_str());
+        }
+        ImGui::Separator();
+        const bool grid_valid = change_grid_columns_ > 0 && change_grid_rows_ > 0;
+        const bool grid_changed = change_grid_columns_ != project_->config.columns ||
+                                  change_grid_rows_ != project_->config.rows;
+        ImGui::BeginDisabled(!grid_editable || !grid_valid || !grid_changed);
+        if (ImGui::Button("Apply Grid")) {
+            flush_global_prompt();
+            if (!global_prompt_dirty_) {
+                auto request = make_request(chunkmap::CommandType::ProjectGridSet);
+                request.payload = chunkmap::ProjectGridSetPayload{
+                    change_grid_columns_, change_grid_rows_};
+                auto updated = command_host_.submit_and_wait(std::move(request));
+                if (updated && updated.value().project_snapshot) {
+                    apply_project_snapshot(*updated.value().project_snapshot, false);
+                    status_message_ = "Concept grid updated";
+                    error_message_.clear();
+                    change_grid_error_.clear();
+                    show_change_grid_ = false;
+                    ImGui::CloseCurrentPopup();
+                } else {
+                    change_grid_error_ = updated ? "Grid command returned no project."
+                                                 : updated.error().message;
+                    error_message_ = change_grid_error_;
+                }
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+    }
+    if (ImGui::Button("Cancel")) {
+        show_change_grid_ = false;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+    show_change_grid_ = open && show_change_grid_;
+}
+
 void App::draw_export_progress_modal() {
     constexpr const char* title = "Exporting Full Map";
     if (pending_export_request_id_) ImGui::OpenPopup(title);
@@ -990,6 +1067,8 @@ void App::apply_project_snapshot(chunkmap::Project project, bool reset_selection
     const auto previous_selection = reset_selection ? std::optional<chunkmap::ChunkCoord>{} : selected_;
     workspace_ = project.paths.root().parent_path().parent_path();
     project_ = std::move(project);
+    change_grid_columns_ = project_->config.columns;
+    change_grid_rows_ = project_->config.rows;
     concept_comparison_.cancel();
     selected_.reset();
     prompt_buffer_.clear();

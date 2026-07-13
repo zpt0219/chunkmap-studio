@@ -52,6 +52,19 @@ TEST_CASE("command codec preserves global prompt payload") {
     CHECK(payload->text == "Top-down pixel art");
 }
 
+TEST_CASE("command codec preserves project grid payload") {
+    auto original = request(
+        chunkmap::CommandType::ProjectGridSet, "/tmp/work space", "codec-grid", "world");
+    original.payload = chunkmap::ProjectGridSetPayload{5, 4};
+    auto decoded = chunkmap::decode_command_request(chunkmap::encode_command_request(original));
+    REQUIRE(decoded);
+    CHECK(decoded.value().type == chunkmap::CommandType::ProjectGridSet);
+    const auto* payload = std::get_if<chunkmap::ProjectGridSetPayload>(&decoded.value().payload);
+    REQUIRE(payload != nullptr);
+    CHECK(payload->columns == 5);
+    CHECK(payload->rows == 4);
+}
+
 TEST_CASE("command codec preserves full map export payload") {
     auto original = request(
         chunkmap::CommandType::MapExport, "/tmp/work space", "codec-export", "world");
@@ -104,6 +117,10 @@ TEST_CASE("first chunk import requests global prompt exactly once") {
     CHECK(first_result.value().data["global_prompt_action"]["required"] == true);
     CHECK(first_result.value().data["global_prompt_action"]["reason"] ==
           "first_chunk_imported");
+    const auto guide = std::filesystem::path(
+        first_result.value().data["global_prompt_action"]["authoring_guide"]
+            .get<std::string>());
+    CHECK(std::filesystem::is_regular_file(guide));
 
     auto second = request(chunkmap::CommandType::ChunkImport, workspace, "global-3", "world");
     second.payload = chunkmap::ChunkImagePayload{
@@ -111,6 +128,38 @@ TEST_CASE("first chunk import requests global prompt exactly once") {
     auto second_result = queue.submit(std::move(second)).get();
     REQUIRE(second_result);
     CHECK_FALSE(second_result.value().data.contains("global_prompt_action"));
+
+    queue.stop_and_drain();
+    std::filesystem::remove_all(workspace, error);
+}
+
+TEST_CASE("project grid command rebuilds an empty in-memory document") {
+    const auto workspace = std::filesystem::temp_directory_path() /
+        "chunkmap-project-grid-command";
+    std::error_code error;
+    std::filesystem::remove_all(workspace, error);
+
+    chunkmap::DocumentCommandQueue queue;
+    auto create = request(chunkmap::CommandType::ProjectCreate, workspace, "grid-1", "world");
+    create.payload = chunkmap::ProjectCreatePayload{
+        "world", std::filesystem::path(CHUNKMAP_TEST_SOURCE_DIR) / "fixtures/chunk.png",
+        2, 2, 0.15, 0.15};
+    REQUIRE(queue.submit(std::move(create)).get());
+
+    auto resize = request(chunkmap::CommandType::ProjectGridSet, workspace, "grid-2", "world");
+    resize.payload = chunkmap::ProjectGridSetPayload{4, 3};
+    auto resized = queue.submit(std::move(resize)).get();
+    REQUIRE(resized);
+    REQUIRE(resized.value().project_snapshot);
+    CHECK(resized.value().project_snapshot->config.columns == 4);
+    CHECK(resized.value().project_snapshot->config.rows == 3);
+    CHECK(resized.value().changes.project_changed);
+
+    auto prompt = request(chunkmap::CommandType::PromptShow, workspace, "grid-3", "world");
+    prompt.payload = chunkmap::CoordPayload{{3, 2}};
+    auto shown = queue.submit(std::move(prompt)).get();
+    REQUIRE(shown);
+    CHECK(shown.value().data.at("prompt") == "");
 
     queue.stop_and_drain();
     std::filesystem::remove_all(workspace, error);

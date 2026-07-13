@@ -51,8 +51,18 @@ TEST_CASE("desktop menu keeps global actions in the app shell") {
     CHECK(header.find("show_seams_") == std::string::npos);
     CHECK(app.find("kLogWheelLines = 3.0F") != std::string::npos);
     CHECK(header.find("std::optional<float> log_scroll_y_") != std::string::npos);
+    CHECK(app.find("CommandType::ProjectGridSet") != std::string::npos);
+    CHECK(app.find("Button(\"Apply Grid\"") != std::string::npos);
+    CHECK(app.find("MenuItem(\"Change Grid...\"") != std::string::npos);
+    CHECK(app.find("void App::draw_change_grid_modal()") != std::string::npos);
+    CHECK(header.find("change_grid_columns_") != std::string::npos);
     CHECK(header.find("bool exit_requested() const") != std::string::npos);
     CHECK(main.find("app.exit_requested()") != std::string::npos);
+    CHECK(main.find("desktop_config_directory()") != std::string::npos);
+    CHECK(main.find("window-state.ini") != std::string::npos);
+    CHECK(main.find("SaveIniSettingsToDisk") != std::string::npos);
+    CHECK(app.find("DockBuilderGetNode(dockspace_id) == nullptr") != std::string::npos);
+    CHECK(header.find("reset_layout_requested_") != std::string::npos);
 }
 
 TEST_CASE("prompt inspector exposes global and local prompt sources") {
@@ -64,6 +74,21 @@ TEST_CASE("prompt inspector exposes global and local prompt sources") {
     CHECK(app.find("ImGuiInputTextFlags_WordWrap") != std::string::npos);
     CHECK(app.find("kPromptAutosaveDelaySeconds = 60.0") != std::string::npos);
     CHECK(app.find("Autosaves after 1 min idle") != std::string::npos);
+}
+
+TEST_CASE("prompt authoring guide is mandatory and embedded into handoff") {
+    const auto agents = read_source("AGENTS.md");
+    const auto guide = read_source("docs/PROMPT_AUTHORING_GUIDE.md");
+    const auto cmake = read_source("src/CMakeLists.txt");
+    const auto service = read_source("src/project/project_service.cpp");
+    CHECK(agents.find("docs/PROMPT_AUTHORING_GUIDE.md") != std::string::npos);
+    CHECK(agents.find("This is mandatory") != std::string::npos);
+    CHECK(guide.find("Preserve model freedom") != std::string::npos);
+    CHECK(guide.find("Interpret Concept symbols semantically") != std::string::npos);
+    CHECK(cmake.find("file(READ \"${CMAKE_SOURCE_DIR}/docs/PROMPT_AUTHORING_GUIDE.md\"") !=
+          std::string::npos);
+    CHECK(service.find("export_prompt_authoring_guide") != std::string::npos);
+    CHECK(service.find("authoring_guide") != std::string::npos);
 }
 
 TEST_CASE("concept comparison is a momentary desktop-only review control") {

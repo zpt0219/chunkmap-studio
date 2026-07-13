@@ -26,6 +26,9 @@ run_chunkmap(--project phase3-world --json concept context)
 if(NOT LAST_OUTPUT MATCHES "\"ok\":true")
     message(FATAL_ERROR "Concept context did not return JSON success: ${LAST_OUTPUT}")
 endif()
+if(NOT LAST_OUTPUT MATCHES "authoring_guide")
+    message(FATAL_ERROR "Concept context did not return its Prompt guide: ${LAST_OUTPUT}")
+endif()
 
 run_chunkmap(--project phase3-world --json global-prompt show)
 string(JSON initial_global_prompt GET "${LAST_OUTPUT}" data prompt)
@@ -42,7 +45,8 @@ endif()
 
 run_chunkmap(--project phase3-world --json chunk import 1,1 --image "${IMAGE}")
 if(NOT LAST_OUTPUT MATCHES "global_prompt_action" OR
-   NOT LAST_OUTPUT MATCHES "first_chunk_imported")
+   NOT LAST_OUTPUT MATCHES "first_chunk_imported" OR
+   NOT LAST_OUTPUT MATCHES "authoring_guide")
     message(FATAL_ERROR "First import did not request a Global Prompt: ${LAST_OUTPUT}")
 endif()
 run_chunkmap(--project phase3-world --json chunk import 1,1 --image "${IMAGE}")
@@ -120,6 +124,7 @@ foreach(required_file
 endforeach()
 
 foreach(required_handoff
+        "prompt-authoring-guide.md"
         "concept/regions/0_0.png"
         "concept/regions/1_1.png"
         "concept/manifest.json"

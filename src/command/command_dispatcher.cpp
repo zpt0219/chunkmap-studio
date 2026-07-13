@@ -149,6 +149,26 @@ Result<CommandResult> CommandDispatcher::execute(
             result.changes.project_changed = true;
             break;
 
+        case CommandType::ProjectGridSet: {
+            auto payload = require_payload<ProjectGridSetPayload>(request);
+            if (!payload) return Result<CommandResult>::failure(
+                payload.error().code, payload.error().message);
+            const bool grid_changed = payload.value()->columns != project.config.columns ||
+                                      payload.value()->rows != project.config.rows;
+            auto updated = service.update_grid(
+                project, payload.value()->columns, payload.value()->rows);
+            if (!updated) return Result<CommandResult>::failure(
+                updated.error().code, updated.error().message);
+            if (grid_changed) document.reset_empty_grid();
+            result.data = {{"project", config_json(project.config)}};
+            result.text = "Updated project grid to " +
+                          std::to_string(project.config.columns) + "x" +
+                          std::to_string(project.config.rows) + ".";
+            result.project_snapshot = project;
+            result.changes.project_changed = grid_changed;
+            break;
+        }
+
         case CommandType::ProjectStatus: {
             const int total_chunks = project.config.columns * project.config.rows;
             result.data = config_json(project.config);
@@ -190,6 +210,7 @@ Result<CommandResult> CommandDispatcher::execute(
                           {"rows", project.config.rows}}},
                 {"regions_dir", context.value().regions_dir.string()},
                 {"manifest", context.value().manifest.string()},
+                {"authoring_guide", context.value().authoring_guide.string()},
                 {"output_schema", context.value().prompts_schema.string()},
                 {"write_command", "chunkmap --project " + project_name +
                     " prompts import --input <prompts.json>"},
@@ -335,6 +356,13 @@ Result<CommandResult> CommandDispatcher::execute(
             if (!payload) return Result<CommandResult>::failure(
                 payload.error().code, payload.error().message);
             const bool initialized_size = !project.config.has_chunk_size();
+            std::optional<std::filesystem::path> authoring_guide;
+            if (request.type == CommandType::ChunkImport && initialized_size) {
+                auto exported = service.export_prompt_authoring_guide(project);
+                if (!exported) return Result<CommandResult>::failure(
+                    exported.error().code, exported.error().message);
+                authoring_guide = exported.take_value();
+            }
             auto neighbors = document_neighbors(document, payload.value()->coord);
             if (!neighbors) return Result<CommandResult>::failure(
                 neighbors.error().code, neighbors.error().message);
@@ -366,10 +394,11 @@ Result<CommandResult> CommandDispatcher::execute(
                     {"required", true},
                     {"reason", "first_chunk_imported"},
                     {"seed_image", written.value().image.string()},
+                    {"authoring_guide", authoring_guide->string()},
                     {"instruction",
-                     "Analyze this formal chunk image and write a project-wide visual style "
-                     "prompt. Describe style, palette, camera, scale, lighting, rendering "
-                     "rules, and exclusions; do not describe this chunk's local layout."},
+                     "Read the authoring guide completely, then analyze this formal chunk "
+                     "image and write a project-wide Global Prompt. Follow the guide's "
+                     "Global Prompt rules and do not describe this chunk's local layout."},
                     {"write_command", write_command},
                 };
                 result.text +=

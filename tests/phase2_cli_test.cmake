@@ -25,6 +25,7 @@ run_chunkmap(
 )
 
 run_chunkmap(--json project open cli-world)
+run_chunkmap(--project cli-world --json project grid --columns 3 --rows 2)
 
 run_chunkmap(--project cli-world --json chunk import 1,1 --image "${CONCEPT}")
 run_chunkmap(--project cli-world --json chunk import 0,0 --image "${CONCEPT}")
@@ -45,6 +46,12 @@ run_chunkmap(--project cli-world --json project status)
 run_chunkmap(--project cli-world project validate)
 
 set(project_root "${WORKSPACE}/output/cli-world")
+file(READ "${project_root}/project.json" project_json)
+string(JSON project_columns GET "${project_json}" columns)
+string(JSON project_rows GET "${project_json}" rows)
+if(NOT project_columns EQUAL 3 OR NOT project_rows EQUAL 2)
+    message(FATAL_ERROR "Project grid update was not persisted: ${project_json}")
+endif()
 foreach(required_file
         "project.json"
         "concept.png"

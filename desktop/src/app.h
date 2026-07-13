@@ -36,6 +36,7 @@ private:
     void draw_seam_tab();
     void draw_new_project_modal();
     void draw_project_settings_modal();
+    void draw_change_grid_modal();
     void draw_export_progress_modal();
 
     void new_project_dialog();
@@ -89,10 +90,15 @@ private:
     bool show_inspector_ = true;
     bool show_log_ = true;
     bool layout_initialized_ = false;
+    bool reset_layout_requested_ = false;
     bool exit_requested_ = false;
 
     bool show_new_project_ = false;
     bool show_project_settings_ = false;
+    bool show_change_grid_ = false;
+    int change_grid_columns_ = 1;
+    int change_grid_rows_ = 1;
+    std::string change_grid_error_;
     std::string new_project_name_;
     std::string new_concept_path_;
     int new_columns_ = 3;

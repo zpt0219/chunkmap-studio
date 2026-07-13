@@ -154,6 +154,22 @@ int CliApp::run_project() {
         request.project_name = command_line_.args[2];
         return execute(std::move(request));
     }
+    if (action == "grid") {
+        auto project = require_project();
+        if (!project) return print_error("project grid", project.error());
+        const auto columns_text = option_value(command_line_.args, "--columns");
+        const auto rows_text = option_value(command_line_.args, "--rows");
+        if (!columns_text || !rows_text) {
+            return usage_error("project grid requires --columns and --rows.");
+        }
+        auto columns = parse_positive_int(*columns_text, "columns");
+        auto rows = parse_positive_int(*rows_text, "rows");
+        if (!columns) return print_error("project grid", columns.error());
+        if (!rows) return print_error("project grid", rows.error());
+        auto request = make_request(chunkmap::CommandType::ProjectGridSet);
+        request.payload = chunkmap::ProjectGridSetPayload{columns.value(), rows.value()};
+        return execute(std::move(request));
+    }
     if (action != "status" && action != "validate") {
         return usage_error("Unknown project subcommand: " + action);
     }
@@ -359,7 +375,9 @@ void CliApp::print_help() const {
         << "  --workspace <path>\n  --project <name>\n  --json\n\n"
         << "Commands:\n"
         << "  project init <name> --concept <image> --columns <n> --rows <n>\n"
-        << "  project open <name>\n  project status\n  project validate\n"
+        << "  project open <name>\n"
+        << "  project grid --columns <n> --rows <n>\n"
+        << "  project status\n  project validate\n"
         << "  prompt show <x,y>\n  prompt set <x,y> --file <path>\n"
         << "  prompts import --input <json>\n  concept context\n"
         << "  global-prompt show\n  global-prompt set --file <path>\n"

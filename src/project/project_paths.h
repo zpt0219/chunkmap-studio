@@ -44,6 +44,7 @@ class WorkspaceHandoffPaths {
 public:
     WorkspaceHandoffPaths(std::filesystem::path workspace_root, std::string project_name);
     std::filesystem::path root() const;
+    std::filesystem::path prompt_authoring_guide() const;
     std::filesystem::path concept_dir() const;
     std::filesystem::path concept_regions_dir() const;
     std::filesystem::path concept_region(ChunkCoord coord) const;
