@@ -74,8 +74,11 @@ Bulk Prompt import uses this shape and overwrites only the listed coordinates:
 
 Prompt generation follows [`docs/PROMPT_AUTHORING_GUIDE.md`](docs/PROMPT_AUTHORING_GUIDE.md).
 The guide separates reusable Global visual rules from short Local regional intent,
-interprets Concept icons semantically rather than literally, and leaves minor
-objects and decorative detail to the image model.
+defines gameplay-scale walkability and collision-boundary readability, interprets
+Concept icons semantically rather than literally, and leaves minor objects and
+decorative detail to the image model. Agents must also read it before image
+generation so the execution wrapper cannot turn authored tilemap Prompts into a
+panoramic or concept-art composition.
 
 ```json
 {

@@ -354,8 +354,12 @@ TEST_CASE("concept context exports regions schema and manifest") {
     CHECK(manifest.value().find("prompts import") != std::string::npos);
     auto guide = chunkmap::atomic_file::read_text(context.value().authoring_guide);
     REQUIRE(guide.ok());
+    CHECK(guide.value().find("Specification version: 2") != std::string::npos);
     CHECK(guide.value().find("Preserve model freedom") != std::string::npos);
     CHECK(guide.value().find("Interpret Concept symbols semantically") != std::string::npos);
+    CHECK(guide.value().find("gameplay-ready overworld tilemap") != std::string::npos);
+    CHECK(guide.value().find("Generation-time Prompt discipline") != std::string::npos);
+    CHECK(guide.value().find("A Seam difference of `0.0`") != std::string::npos);
 }
 
 TEST_CASE("concept slice export writes one external grid region") {

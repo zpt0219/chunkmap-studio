@@ -83,8 +83,14 @@ TEST_CASE("prompt authoring guide is mandatory and embedded into handoff") {
     const auto service = read_source("src/project/project_service.cpp");
     CHECK(agents.find("docs/PROMPT_AUTHORING_GUIDE.md") != std::string::npos);
     CHECK(agents.find("This is mandatory") != std::string::npos);
+    CHECK(agents.find("or generating any Chunk") != std::string::npos);
+    CHECK(guide.find("Specification version: 2") != std::string::npos);
     CHECK(guide.find("Preserve model freedom") != std::string::npos);
     CHECK(guide.find("Interpret Concept symbols semantically") != std::string::npos);
+    CHECK(guide.find("gameplay-ready overworld tilemap") != std::string::npos);
+    CHECK(guide.find("Generation-time Prompt discipline") != std::string::npos);
+    CHECK(guide.find("A Seam difference of `0.0`") != std::string::npos);
+    CHECK(guide.find("Regenerating adjacent drifted Chunks") != std::string::npos);
     CHECK(cmake.find("file(READ \"${CMAKE_SOURCE_DIR}/docs/PROMPT_AUTHORING_GUIDE.md\"") !=
           std::string::npos);
     CHECK(service.find("export_prompt_authoring_guide") != std::string::npos);

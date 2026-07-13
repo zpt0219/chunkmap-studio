@@ -116,10 +116,11 @@ Concept 与 Chunk Context 导出到：
 它们可以随时覆盖或删除。Context 中的 Concept regions 只用于理解布局、写 Prompt；
 详细 Chunk 生成只使用 Ready 邻居形成的 template 与 mask。
 
-`docs/PROMPT_AUTHORING_GUIDE.md` 是 Global/Local Prompt 语义的单一规范源。CMake 在
-构建时将它嵌入 Core；`concept context` 与首张 Chunk import 会把同一内容写到
-handoff 的 `prompt-authoring-guide.md`，并通过 command JSON/manifest 返回
-`authoring_guide` 路径。JSON Schema 只负责传输结构，不重复语义规范。
+`docs/PROMPT_AUTHORING_GUIDE.md` 是 Global/Local Prompt 语义、generation-time
+wrapper 纪律与视觉验收标准的单一规范源。CMake 在构建时将它嵌入 Core；
+`concept context` 与首张 Chunk import 会把同一内容写到 handoff 的
+`prompt-authoring-guide.md`，并通过 command JSON/manifest 返回 `authoring_guide`
+路径。JSON Schema 只负责传输结构，不重复语义规范。
 
 Chunk Inspector 的 `Export Concept Slice...` 是独立的显式导出：它只裁切选中坐标的
 Concept region，写入用户选择的项目外 PNG，不创建整套 regions，也不改变项目状态。

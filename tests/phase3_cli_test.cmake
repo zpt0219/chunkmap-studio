@@ -29,6 +29,13 @@ endif()
 if(NOT LAST_OUTPUT MATCHES "authoring_guide")
     message(FATAL_ERROR "Concept context did not return its Prompt guide: ${LAST_OUTPUT}")
 endif()
+set(handoff_root "${WORKSPACE}/.chunkmap/handoff/phase3-world")
+file(READ "${handoff_root}/prompt-authoring-guide.md" authoring_guide)
+if(NOT authoring_guide MATCHES "Specification version: 2" OR
+   NOT authoring_guide MATCHES "gameplay-ready overworld tilemap" OR
+   NOT authoring_guide MATCHES "Generation-time Prompt discipline")
+    message(FATAL_ERROR "Exported Prompt guide is not the required Version 2")
+endif()
 
 run_chunkmap(--project phase3-world --json global-prompt show)
 string(JSON initial_global_prompt GET "${LAST_OUTPUT}" data prompt)
@@ -78,7 +85,6 @@ run_chunkmap(--project phase3-world --json chunk context 0,1)
 if(NOT LAST_OUTPUT MATCHES "\"mask\"")
     message(FATAL_ERROR "Chunk context did not report an inpaint mask: ${LAST_OUTPUT}")
 endif()
-set(handoff_root "${WORKSPACE}/.chunkmap/handoff/phase3-world")
 file(READ "${handoff_root}/chunk_0_1/prompt.txt" combined_prompt)
 if(NOT combined_prompt MATCHES "GLOBAL VISUAL STYLE" OR
    NOT combined_prompt MATCHES "Top-down GBA pixel art" OR

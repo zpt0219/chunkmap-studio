@@ -50,11 +50,11 @@ Open an existing project in the running Desktop host with:
 
 ## Project And Prompt Workflow
 
-Before generating or modifying any Global or Local Prompt, read
-`docs/PROMPT_AUTHORING_GUIDE.md` completely. This is mandatory. The guide is the
-semantic source of truth; `prompts.schema.json` only defines the JSON transport
-shape. `concept context` also returns an `authoring_guide` path to the same guide
-inside the project handoff for self-contained agent workflows.
+Before generating or modifying any Global or Local Prompt, or generating any Chunk
+image, read `docs/PROMPT_AUTHORING_GUIDE.md` completely. This is mandatory. The
+guide is the semantic source of truth; `prompts.schema.json` only defines the JSON
+transport shape. `concept context` also returns an `authoring_guide` path to the
+same guide inside the project handoff for self-contained agent workflows.
 
 Create a project when the user asks for a new map:
 
@@ -129,7 +129,9 @@ Global Prompt directly.
 
 For a requested target coordinate:
 
-1. Read the current prompt with `prompt show` if useful.
+1. Read `docs/PROMPT_AUTHORING_GUIDE.md` completely, then read the current Global
+   and Local Prompts. This applies even when the Prompts already exist and the user
+   asks only for image generation.
 2. Export a fresh self-contained generation context:
 
 ```bash
@@ -146,7 +148,9 @@ For a requested target coordinate:
 4. Use the image-generation capability available through the user's Codex
    subscription. Do not add or request an API key unless the user explicitly asks
    for an API integration. Preserve the protected neighbor pixels exactly and
-   generate only the open area according to `prompt.txt`.
+   generate only the open area according to `prompt.txt`. The execution wrapper
+   may describe input roles, mask behavior, expected size, and seamless continuation;
+   it must not add new scenic scale, subjects, landmarks, camera language, or style.
 5. Write the result as the formal image:
 
 ```bash
@@ -154,9 +158,15 @@ For a requested target coordinate:
   chunk write <x,y> --image /absolute/path/to/generated.png
 ```
 
-6. Inspect the Desktop result and, when needed, use `seam inspect`, edit the
-   prompt, export fresh context, and regenerate. A successful write immediately
-   replaces the previous formal image; there is no Accept step.
+6. Inspect the Desktop result and apply both acceptance layers from the guide.
+   `seam inspect` verifies overlap only; it does not prove gameplay scale,
+   walkability, or visual composition. When needed, edit the Prompt, export fresh
+   context, and regenerate. A successful write immediately replaces the previous
+   formal image; there is no Accept step.
+
+When multiple adjacent Chunks share the same visual drift and the user requests
+replacement, follow the guide's dependency-order regeneration procedure. Use formal
+`chunk remove` and fresh contexts; never delete project images directly.
 
 Never copy a generated image directly into `output/`. Always use `chunk import`
 or `chunk write` so the session validates and persists the formal image.
