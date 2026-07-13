@@ -1,5 +1,7 @@
 # Desktop 内存文档与逐 Chunk 渲染改造计划
 
+> 历史文档：该改造已完成，当前架构见 `docs/CODE_ARCHITECTURE_DESIGN.md`。
+
 状态：两个阶段已实现（schema v2 + ProjectSession/ProjectDocument）
 
 ## 1. 背景与问题

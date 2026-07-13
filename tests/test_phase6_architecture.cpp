@@ -37,6 +37,20 @@ TEST_CASE("desktop menu keeps global actions in the app shell") {
     CHECK(app.find("BeginMenu(\"View\"") != std::string::npos);
     CHECK(app.find("void App::draw_map_controls()") != std::string::npos);
     CHECK(app.find("void App::draw_toolbar()") == std::string::npos);
+    CHECK(app.find("Checkbox(\"Overlays\"") != std::string::npos);
+    CHECK(app.find("Button(\"Reset Scale\"") != std::string::npos);
+    CHECK(app.find("Button(\"Fit Map\"") != std::string::npos);
+    CHECK(app.find("Scale: %.3fx") != std::string::npos);
+    CHECK(app.find("ImGuiMouseButton_Middle") != std::string::npos);
+    CHECK(app.find("std::pow(1.18F") == std::string::npos);
+    CHECK(app.find("zoom_ > 0.18F") == std::string::npos);
+    CHECK(header.find("MapZoomState map_view_") != std::string::npos);
+    CHECK(header.find("show_overlays_") != std::string::npos);
+    CHECK(header.find("show_grid_") == std::string::npos);
+    CHECK(header.find("show_coordinates_") == std::string::npos);
+    CHECK(header.find("show_seams_") == std::string::npos);
+    CHECK(app.find("kLogWheelLines = 3.0F") != std::string::npos);
+    CHECK(header.find("std::optional<float> log_scroll_y_") != std::string::npos);
     CHECK(header.find("bool exit_requested() const") != std::string::npos);
     CHECK(main.find("app.exit_requested()") != std::string::npos);
 }
@@ -52,13 +66,11 @@ TEST_CASE("prompt inspector exposes global and local prompt sources") {
     CHECK(app.find("Autosaves after 1 min idle") != std::string::npos);
 }
 
-TEST_CASE("chunk visibility is a desktop-only review control") {
+TEST_CASE("concept comparison is a momentary desktop-only review control") {
     const auto app = read_source("desktop/src/app.cpp");
-    const auto header = read_source("desktop/src/app.h");
     const auto repository = read_source("src/project/project_repository.cpp");
-    CHECK(app.find("Checkbox(\"Visible on Map\"") != std::string::npos);
-    CHECK(app.find("chunk_image_visible(coord)") != std::string::npos);
-    CHECK(app.find("chunk_image_visibility_.assign") != std::string::npos);
-    CHECK(header.find("chunk_image_visibility_") != std::string::npos);
-    CHECK(repository.find("chunk_image_visibility") == std::string::npos);
+    CHECK(app.find("Button(\"Hold: This Chunk\"") != std::string::npos);
+    CHECK(app.find("Button(\"Hold: Full Map\"") != std::string::npos);
+    CHECK(app.find("Button(\"Export Concept Slice...\"") != std::string::npos);
+    CHECK(repository.find("compare_full_concept") == std::string::npos);
 }

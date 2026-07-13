@@ -1,9 +1,11 @@
 # Phase 6: Desktop Command Host 与 DocumentCommandQueue
 
+> 历史文档：该阶段已完成，当前架构见 `docs/CODE_ARCHITECTURE_DESIGN.md`。
+
 状态：已实现（`0.6.0-phase6`）
 
 本文定义 Phase 6 的架构改造。它覆盖并替代
-[CODE_ARCHITECTURE_DESIGN.md](./CODE_ARCHITECTURE_DESIGN.md) 中关于
+[CODE_ARCHITECTURE_DESIGN.md](../CODE_ARCHITECTURE_DESIGN.md) 中关于
 `ProjectWatcher`、event 文件和 CLI 直接调用 `ProjectService` 的设计。
 
 ## 1. 前提

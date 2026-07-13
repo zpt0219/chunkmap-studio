@@ -9,6 +9,7 @@ std::string command_name(CommandType type) {
     case CommandType::ProjectStatus: return "project status";
     case CommandType::ProjectValidate: return "project validate";
     case CommandType::ConceptContext: return "concept context";
+    case CommandType::ConceptSliceExport: return "concept slice export";
     case CommandType::PromptsImport: return "prompts import";
     case CommandType::PromptShow: return "prompt show";
     case CommandType::PromptSet: return "prompt set";

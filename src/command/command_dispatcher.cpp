@@ -201,6 +201,25 @@ Result<CommandResult> CommandDispatcher::execute(
             break;
         }
 
+        case CommandType::ConceptSliceExport: {
+            auto payload = require_payload<ConceptSliceExportPayload>(request);
+            if (!payload) return Result<CommandResult>::failure(
+                payload.error().code, payload.error().message);
+            auto exported = service.export_concept_slice(
+                project, payload.value()->coord, payload.value()->output,
+                payload.value()->overwrite);
+            if (!exported) return Result<CommandResult>::failure(
+                exported.error().code, exported.error().message);
+            result.data = {
+                {"coord", {payload.value()->coord.x, payload.value()->coord.y}},
+                {"output", exported.value().output.string()},
+                {"size", {exported.value().width, exported.value().height}},
+            };
+            result.text = "Exported concept slice to " + exported.value().output.string();
+            result.changes = {};
+            break;
+        }
+
         case CommandType::PromptsImport: {
             auto payload = require_payload<PathPayload>(request);
             if (!payload) return Result<CommandResult>::failure(

@@ -103,6 +103,26 @@ Result<ImageGeometry> image_geometry(const ProjectConfig& config) {
     return Result<ImageGeometry>::success(result);
 }
 
+Result<ImageBuffer> ConceptSlicer::slice_one(const ImageBuffer& concept,
+                                             int columns,
+                                             int rows,
+                                             ChunkCoord coord) {
+    if (concept.empty() || columns <= 0 || rows <= 0 ||
+        columns > concept.width() || rows > concept.height()) {
+        return Result<ImageBuffer>::failure(
+            "invalid_concept_grid", "Concept grid must fit within the concept image.");
+    }
+    if (coord.x < 0 || coord.y < 0 || coord.x >= columns || coord.y >= rows) {
+        return Result<ImageBuffer>::failure(
+            "chunk_out_of_range", "Chunk coordinate is outside the concept grid.");
+    }
+    const int x0 = coord.x * concept.width() / columns;
+    const int x1 = (coord.x + 1) * concept.width() / columns;
+    const int y0 = coord.y * concept.height() / rows;
+    const int y1 = (coord.y + 1) * concept.height() / rows;
+    return concept.crop({x0, y0, x1 - x0, y1 - y0});
+}
+
 Result<std::vector<ImageBuffer>> ConceptSlicer::slice(const ImageBuffer& concept,
                                                       int columns,
                                                       int rows) {
@@ -114,12 +134,8 @@ Result<std::vector<ImageBuffer>> ConceptSlicer::slice(const ImageBuffer& concept
     std::vector<ImageBuffer> regions;
     regions.reserve(static_cast<std::size_t>(columns) * static_cast<std::size_t>(rows));
     for (int y = 0; y < rows; ++y) {
-        const int y0 = y * concept.height() / rows;
-        const int y1 = (y + 1) * concept.height() / rows;
         for (int x = 0; x < columns; ++x) {
-            const int x0 = x * concept.width() / columns;
-            const int x1 = (x + 1) * concept.width() / columns;
-            auto region = concept.crop({x0, y0, x1 - x0, y1 - y0});
+            auto region = slice_one(concept, columns, rows, {x, y});
             if (!region) {
                 return Result<std::vector<ImageBuffer>>::failure(
                     region.error().code, region.error().message);

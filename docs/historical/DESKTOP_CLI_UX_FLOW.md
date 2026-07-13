@@ -1,9 +1,11 @@
 # AI Chunk Map Studio: Desktop 与 CLI 用户体验设计
 
+> 历史文档：保留早期 UX 决策；当前行为以 `docs/` 根目录文档为准。
+
 状态：历史 UX 基线；持久化、渲染与 session 章节已被 schema v2 架构取代
 
-> 当前实现以 [CODE_ARCHITECTURE_DESIGN.md](./CODE_ARCHITECTURE_DESIGN.md) 和
-> [IN_MEMORY_DOCUMENT_RENDERING_PLAN.md](./IN_MEMORY_DOCUMENT_RENDERING_PLAN.md) 为准。
+> 当前实现以 [CODE_ARCHITECTURE_DESIGN.md](../CODE_ARCHITECTURE_DESIGN.md) 为准；
+> [IN_MEMORY_DOCUMENT_RENDERING_PLAN.md](./IN_MEMORY_DOCUMENT_RENDERING_PLAN.md) 只保留改造过程。
 > 本文仍保留早期交互决策，但其中的 Composite、cache、registration、旧目录路径和
 > render/map export 命令不再有效。
 
@@ -347,16 +349,17 @@ Codex can generate this chunk from 2 neighbors.
 
 操作：
 
-- `Visible on Map`：仅控制当前 Desktop 会话中的 Ready 图片图层。关闭时地图用该坐标的
-  Concept region 覆盖该 chunk 的完整 footprint（包括 overlap）；不改变 Ready、正式图片、
-  Context、Seam 或整图导出。
+- `Hold: This Chunk`：按住时，用 Concept region 临时覆盖选中 chunk 的完整 footprint
+  （包括 overlap）。
+- `Hold: Full Map`：按住时，临时显示完整 Concept Map。
 - Import Image 或 Replace Image，Empty/Ready chunk 均可用。
 - Export Context，有 Ready 正交邻居时可用。
 - Reveal Image File，仅 Ready chunk 可用。
 - Copy Coordinate。
 
-Visibility 默认开启，只存在于 `App` 内存；Open 或 Reload 项目后全部恢复可见，不写入
-`project.json` 或其他项目文件。隐藏的 chunk 仍可选择，Inspector 仍显示其正式图片。
+两个对比按钮松开后立即恢复正式图片；切换 Inspector 页面、切换 chunk 或 App 失焦也会
+恢复。它们不修改 Ready、正式图片、Context、Seam 或整图导出，也不写入 `project.json`
+或其他项目文件。
 
 `Export Context` 直接向 Desktop 的 DocumentCommandQueue 提交 `ChunkContext`，导出后在
 文件管理器中显示 `manifest.json`。用户在外部工具生成后，仍使用统一的 Import Image

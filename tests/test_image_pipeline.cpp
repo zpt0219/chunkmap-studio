@@ -64,6 +64,16 @@ TEST_CASE("concept slicing covers non-divisible source dimensions") {
     CHECK(sliced.value()[3].height() == 3);
     CHECK(sliced.value()[5].pixel(2, 2)[0] == 6);
     CHECK(sliced.value()[5].pixel(2, 2)[1] == 4);
+
+    auto one = chunkmap::ConceptSlicer::slice_one(source, 3, 2, {2, 1});
+    REQUIRE(one.ok());
+    CHECK(one.value().width() == 3);
+    CHECK(one.value().height() == 3);
+    CHECK(one.value().pixel(2, 2)[0] == 6);
+    CHECK(one.value().pixel(2, 2)[1] == 4);
+    auto outside = chunkmap::ConceptSlicer::slice_one(source, 3, 2, {3, 1});
+    REQUIRE_FALSE(outside.ok());
+    CHECK(outside.error().code == "chunk_out_of_range");
 }
 
 TEST_CASE("template builder supports one and opposite two sides") {

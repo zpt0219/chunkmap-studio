@@ -14,7 +14,8 @@ Result<CommandType> parse_type(const std::string& name) {
     for (const auto type : {
              CommandType::ProjectCreate, CommandType::ProjectOpen,
              CommandType::ProjectStatus, CommandType::ProjectValidate,
-             CommandType::ConceptContext, CommandType::PromptsImport,
+             CommandType::ConceptContext, CommandType::ConceptSliceExport,
+             CommandType::PromptsImport,
              CommandType::PromptShow, CommandType::PromptSet,
              CommandType::GlobalPromptShow, CommandType::GlobalPromptSet,
              CommandType::ChunkImport, CommandType::ChunkContext, CommandType::ChunkWrite,
@@ -80,6 +81,10 @@ json encode_command_request(const CommandRequest& request) {
                            ? "right" : "bottom"}};
         } else if constexpr (std::is_same_v<T, MapExportPayload>) {
             payload = {{"output", value.output.string()}, {"overwrite", value.overwrite}};
+        } else if constexpr (std::is_same_v<T, ConceptSliceExportPayload>) {
+            payload = {{"coord", coord_value(value.coord)},
+                       {"output", value.output.string()},
+                       {"overwrite", value.overwrite}};
         }
     }, request.payload);
     return {
@@ -143,6 +148,12 @@ Result<CommandRequest> decode_command_request(const json& value) {
             break;
         case CommandType::MapExport:
             request.payload = MapExportPayload{
+                payload.at("output").get<std::string>(),
+                payload.at("overwrite").get<bool>()};
+            break;
+        case CommandType::ConceptSliceExport:
+            request.payload = ConceptSliceExportPayload{
+                parse_coord(payload.at("coord")),
                 payload.at("output").get<std::string>(),
                 payload.at("overwrite").get<bool>()};
             break;

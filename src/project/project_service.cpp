@@ -6,6 +6,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <exception>
@@ -26,6 +28,67 @@ bool valid_ratio(double value) {
 bool path_is_regular_file(const std::filesystem::path& path) {
     std::error_code error;
     return std::filesystem::is_regular_file(path, error) && !error;
+}
+
+bool path_is_within(const std::filesystem::path& candidate,
+                    const std::filesystem::path& root) {
+    auto candidate_part = candidate.begin();
+    for (auto root_part = root.begin(); root_part != root.end(); ++root_part, ++candidate_part) {
+        if (candidate_part == candidate.end() || *candidate_part != *root_part) return false;
+    }
+    return true;
+}
+
+Result<std::filesystem::path> validate_concept_slice_output(
+    const Project& project, const std::filesystem::path& requested, bool overwrite) {
+    if (!requested.is_absolute()) {
+        return Result<std::filesystem::path>::failure(
+            "invalid_export_path", "Concept slice export requires an absolute output path.");
+    }
+    std::string extension = requested.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+    if (extension != ".png") {
+        return Result<std::filesystem::path>::failure(
+            "invalid_export_path", "Concept slice export output must use the .png extension.");
+    }
+    std::error_code error;
+    if (!std::filesystem::is_directory(requested.parent_path(), error) || error) {
+        return Result<std::filesystem::path>::failure(
+            "export_parent_missing", "Export parent directory does not exist.");
+    }
+    error.clear();
+    if (std::filesystem::is_symlink(requested, error) && !error) {
+        return Result<std::filesystem::path>::failure(
+            "invalid_export_path", "Concept slice export cannot replace a symbolic link.");
+    }
+    error.clear();
+    if (std::filesystem::is_directory(requested, error) && !error) {
+        return Result<std::filesystem::path>::failure(
+            "invalid_export_path", "Concept slice export output must be a file path.");
+    }
+    error.clear();
+    if (std::filesystem::exists(requested, error) && !error && !overwrite) {
+        return Result<std::filesystem::path>::failure(
+            "export_exists", "Concept slice export output already exists.");
+    }
+    error.clear();
+    const auto parent = std::filesystem::weakly_canonical(requested.parent_path(), error);
+    if (error) {
+        return Result<std::filesystem::path>::failure(
+            "invalid_export_path", "Unable to normalize export output path.");
+    }
+    const auto output = (parent / requested.filename()).lexically_normal();
+    const auto project_root = std::filesystem::weakly_canonical(project.paths.root(), error);
+    if (error) {
+        return Result<std::filesystem::path>::failure(
+            "invalid_export_path", "Unable to normalize project path.");
+    }
+    if (path_is_within(output, project_root)) {
+        return Result<std::filesystem::path>::failure(
+            "export_inside_project", "Concept slice export must be outside the project directory.");
+    }
+    return Result<std::filesystem::path>::success(output);
 }
 
 Result<void> ensure_directory(const std::filesystem::path& path) {
@@ -374,6 +437,41 @@ Result<ConceptContext> ProjectService::export_concept_context(const Project& pro
     if (!schema_saved) return Result<ConceptContext>::failure(
         schema_saved.error().code, schema_saved.error().message);
     return Result<ConceptContext>::success(std::move(context));
+}
+
+Result<ConceptSliceExportResult> ProjectService::export_concept_slice(
+    const Project& project,
+    ChunkCoord coord,
+    const std::filesystem::path& requested_output,
+    bool overwrite) const {
+    auto coord_result = validate_coord(project, coord);
+    if (!coord_result) {
+        return Result<ConceptSliceExportResult>::failure(
+            coord_result.error().code, coord_result.error().message);
+    }
+    auto output = validate_concept_slice_output(project, requested_output, overwrite);
+    if (!output) {
+        return Result<ConceptSliceExportResult>::failure(
+            output.error().code, output.error().message);
+    }
+    auto concept = ImageBuffer::load(project.paths.concept_source());
+    if (!concept) {
+        return Result<ConceptSliceExportResult>::failure(
+            concept.error().code, concept.error().message);
+    }
+    auto region = ConceptSlicer::slice_one(
+        concept.value(), project.config.columns, project.config.rows, coord);
+    if (!region) {
+        return Result<ConceptSliceExportResult>::failure(
+            region.error().code, region.error().message);
+    }
+    auto saved = region.value().save_png(output.value());
+    if (!saved) {
+        return Result<ConceptSliceExportResult>::failure(
+            saved.error().code, saved.error().message);
+    }
+    return Result<ConceptSliceExportResult>::success(
+        {output.value(), region.value().width(), region.value().height()});
 }
 
 Result<ChunkContext> ProjectService::export_chunk_context(

@@ -1,7 +1,9 @@
 #pragma once
 
+#include "concept_comparison_state.h"
 #include "desktop_command_host.h"
 #include "gl_texture.h"
+#include "map_zoom_state.h"
 #include "model/project.h"
 
 #include <imgui.h>
@@ -48,6 +50,7 @@ private:
     void focus_selected(const ImVec2& available);
     void import_image();
     void export_full_map();
+    void export_concept_slice();
     void export_generation_context();
     void refresh_seam();
     void poll_commands();
@@ -60,8 +63,6 @@ private:
     chunkmap::CommandRequest make_request(chunkmap::CommandType type) const;
 
     bool chunk_ready(chunkmap::ChunkCoord coord) const;
-    bool chunk_image_visible(chunkmap::ChunkCoord coord) const;
-    void set_chunk_image_visible(chunkmap::ChunkCoord coord, bool visible);
     int ready_neighbor_count(chunkmap::ChunkCoord coord) const;
     std::string ready_neighbor_text(chunkmap::ChunkCoord coord) const;
 
@@ -79,14 +80,11 @@ private:
     bool global_prompt_dirty_ = false;
     double global_prompt_last_edit_ = 0.0;
 
-    float zoom_ = 1.0F;
-    ImVec2 pan_ = ImVec2(0.0F, 0.0F);
+    MapZoomState map_view_;
     ImVec2 last_canvas_size_ = ImVec2(1.0F, 1.0F);
     bool fit_requested_ = true;
-    bool show_grid_ = true;
-    bool show_coordinates_ = true;
-    bool show_seams_ = true;
-    std::vector<bool> chunk_image_visibility_;
+    bool show_overlays_ = true;
+    ConceptComparisonState concept_comparison_;
     bool show_map_controls_ = true;
     bool show_inspector_ = true;
     bool show_log_ = true;
@@ -115,6 +113,7 @@ private:
     std::string error_message_;
     std::optional<std::string> pending_import_request_id_;
     std::optional<std::string> pending_export_request_id_;
+    std::optional<std::string> pending_concept_export_request_id_;
     std::optional<std::filesystem::path> last_export_path_;
     std::size_t export_progress_completed_ = 0;
     std::size_t export_progress_total_ = 0;
@@ -130,6 +129,7 @@ private:
     };
     std::vector<LogEntry> log_entries_;
     bool log_auto_scroll_ = true;
+    std::optional<float> log_scroll_y_;
 };
 
 }  // namespace chunkmap_desktop

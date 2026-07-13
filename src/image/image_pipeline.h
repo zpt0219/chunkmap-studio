@@ -39,6 +39,10 @@ Result<ImageGeometry> image_geometry(const ProjectConfig& config);
 
 class ConceptSlicer {
 public:
+    static Result<ImageBuffer> slice_one(const ImageBuffer& concept,
+                                         int columns,
+                                         int rows,
+                                         ChunkCoord coord);
     static Result<std::vector<ImageBuffer>> slice(const ImageBuffer& concept,
                                                   int columns,
                                                   int rows);

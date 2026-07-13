@@ -15,6 +15,7 @@ enum class CommandType {
     ProjectStatus,
     ProjectValidate,
     ConceptContext,
+    ConceptSliceExport,
     PromptsImport,
     PromptShow,
     PromptSet,
@@ -75,6 +76,12 @@ struct MapExportPayload {
     bool overwrite = false;
 };
 
+struct ConceptSliceExportPayload {
+    ChunkCoord coord;
+    std::filesystem::path output;
+    bool overwrite = false;
+};
+
 using CommandPayload = std::variant<
     std::monostate,
     ProjectCreatePayload,
@@ -84,7 +91,8 @@ using CommandPayload = std::variant<
     PathPayload,
     ChunkImagePayload,
     SeamInspectPayload,
-    MapExportPayload>;
+    MapExportPayload,
+    ConceptSliceExportPayload>;
 
 struct CommandRequest {
     std::string request_id;

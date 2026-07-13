@@ -37,6 +37,12 @@ struct ConceptContext {
     std::vector<std::filesystem::path> regions;
 };
 
+struct ConceptSliceExportResult {
+    std::filesystem::path output;
+    int width = 0;
+    int height = 0;
+};
+
 struct ChunkContext {
     ChunkCoord coord;
     std::filesystem::path manifest;
@@ -79,6 +85,11 @@ public:
     Result<std::string> read_global_prompt(const Project& project) const;
     Result<void> write_global_prompt(const Project& project, std::string_view text) const;
     Result<ConceptContext> export_concept_context(const Project& project) const;
+    Result<ConceptSliceExportResult> export_concept_slice(
+        const Project& project,
+        ChunkCoord coord,
+        const std::filesystem::path& output,
+        bool overwrite) const;
     Result<ChunkContext> export_chunk_context(const Project& project, ChunkCoord coord) const;
     Result<ChunkContext> export_chunk_context(
         const Project& project, ChunkCoord coord, const NeighborImages& neighbors,

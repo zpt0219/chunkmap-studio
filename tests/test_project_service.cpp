@@ -316,6 +316,33 @@ TEST_CASE("concept context exports regions schema and manifest") {
     CHECK(manifest.value().find("prompts import") != std::string::npos);
 }
 
+TEST_CASE("concept slice export writes one external grid region") {
+    TempWorkspace workspace;
+    chunkmap::ProjectService service(workspace.path);
+    auto project = create_project(workspace, service);
+    const auto output = workspace.path / "concept slice 2_1.png";
+
+    auto exported = service.export_concept_slice(project, {2, 1}, output, false);
+    REQUIRE(exported.ok());
+    CHECK(exported.value().output == std::filesystem::weakly_canonical(output));
+    CHECK(exported.value().width == 4);
+    CHECK(exported.value().height == 4);
+    auto image = chunkmap::ImageBuffer::load(output);
+    REQUIRE(image.ok());
+    CHECK(image.value().width() == 4);
+    CHECK(image.value().height() == 4);
+
+    auto existing = service.export_concept_slice(project, {2, 1}, output, false);
+    REQUIRE_FALSE(existing.ok());
+    CHECK(existing.error().code == "export_exists");
+    REQUIRE(service.export_concept_slice(project, {2, 1}, output, true).ok());
+
+    auto inside = service.export_concept_slice(
+        project, {0, 0}, project.paths.root() / "derived.png", false);
+    REQUIRE_FALSE(inside.ok());
+    CHECK(inside.error().code == "export_inside_project");
+}
+
 TEST_CASE("chunk context requires a Ready neighbor and excludes concept references") {
     TempWorkspace workspace;
     chunkmap::ProjectService service(workspace.path);

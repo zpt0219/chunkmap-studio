@@ -124,15 +124,27 @@ CLI commands refresh the app through `ChangeSet`, without file polling. Image
 generation remains outside the app and can use either Codex with the CLI or a
 manually operated external image generator.
 
-Each Ready chunk has a `Visible on Map` review checkbox in the Chunk Inspector.
-Hiding it reveals that coordinate's Concept region across the chunk's complete
-footprint, including overlap, without changing Ready state, exports, generation
-context, or project files. Visibility resets when the project is opened or reloaded.
+The Chunk Inspector has two momentary Concept comparison controls. Hold
+`This Chunk` to reveal the selected coordinate's Concept region across its complete
+footprint, including overlap, or hold `Full Map` to reveal the complete Concept Map.
+Releasing either button immediately restores generated images. These controls do
+not change Ready state, exports, generation context, session state, or project files.
+`Export Concept Slice...` writes the selected coordinate's exact Concept grid region
+to a user-selected PNG outside the project without exporting the other regions.
 
 The application menu bar owns project lifecycle actions: use File for New,
 Open, Reload, Export Full Map, and Quit; Project for Project Settings; and View
 for map overlays, panel visibility, and layout reset. The compact Map Controls
-panel only keeps the frequent Fit Map, Grid, Coordinates, and Seams controls.
+panel provides Reset Scale, Fit Map, and one Overlays switch for Grid, Coordinates,
+and Seams. Reset Scale restores 1:1 at the map's top-left; Fit Map uses a continuous
+scale and centers the map. The displayed `Scale: 0.000x` value always reflects the
+actual view. Mouse-wheel zoom moves through discrete scale presets while preserving
+the world point under the cursor. Drag with either the middle or right mouse button
+to pan. Coordinate labels remain visible at every scale while Overlays is enabled.
+
+The Log panel follows the conventional three-line mouse-wheel step so short log
+views remain controllable. Trackpad input stays continuous and proportional to the
+platform-provided wheel delta.
 
 The Prompt Inspector edits both source texts with explicit labels: the Global
 Prompt shared by every chunk and the Local Chunk Prompt for the selected
@@ -194,8 +206,8 @@ RGBA PNG through the running Desktop host:
 Add `--force` to replace an existing output. Empty chunks remain transparent,
 the output must be outside `output/my-world/`, and the streaming exporter does
 not create project cache or Composite files. Desktop shows a modal progress
-window while either UI or CLI export work is running. Its contract is documented in
-[`docs/FULL_MAP_EXPORT_DESIGN.md`](docs/FULL_MAP_EXPORT_DESIGN.md).
+window while either UI or CLI export work is running. The completed design is archived in
+[`docs/historical/FULL_MAP_EXPORT_DESIGN.md`](docs/historical/FULL_MAP_EXPORT_DESIGN.md).
 
 The persisted project is intentionally sparse:
 

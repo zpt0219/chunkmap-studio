@@ -65,6 +65,23 @@ TEST_CASE("command codec preserves full map export payload") {
     CHECK(payload->overwrite);
 }
 
+TEST_CASE("command codec preserves concept slice export payload") {
+    auto original = request(
+        chunkmap::CommandType::ConceptSliceExport,
+        "/tmp/work space", "codec-concept-export", "world");
+    original.payload = chunkmap::ConceptSliceExportPayload{
+        {2, 3}, "/tmp/concept slice.png", true};
+    auto decoded = chunkmap::decode_command_request(chunkmap::encode_command_request(original));
+    REQUIRE(decoded);
+    CHECK(decoded.value().type == chunkmap::CommandType::ConceptSliceExport);
+    const auto* payload =
+        std::get_if<chunkmap::ConceptSliceExportPayload>(&decoded.value().payload);
+    REQUIRE(payload != nullptr);
+    CHECK(payload->coord == chunkmap::ChunkCoord{2, 3});
+    CHECK(payload->output == std::filesystem::path("/tmp/concept slice.png"));
+    CHECK(payload->overwrite);
+}
+
 TEST_CASE("first chunk import requests global prompt exactly once") {
     const auto workspace = std::filesystem::temp_directory_path() /
         "chunkmap-global-prompt-action";
@@ -136,6 +153,38 @@ TEST_CASE("full map export command does not publish project changes") {
     CHECK(export_progress.front().completed == 0U);
     CHECK(export_progress.back().completed == export_progress.back().total);
     CHECK(export_progress.back().message == "Export complete");
+
+    queue.stop_and_drain();
+    std::filesystem::remove_all(workspace, error);
+}
+
+TEST_CASE("concept slice export command writes only the requested external image") {
+    const auto workspace = std::filesystem::temp_directory_path() /
+        "chunkmap-concept-slice-export-command";
+    std::error_code error;
+    std::filesystem::remove_all(workspace, error);
+    const auto fixture = std::filesystem::path(CHUNKMAP_TEST_SOURCE_DIR) / "fixtures/chunk.png";
+
+    chunkmap::DocumentCommandQueue queue;
+    auto create = request(
+        chunkmap::CommandType::ProjectCreate, workspace, "concept-export-1", "world");
+    create.payload = chunkmap::ProjectCreatePayload{
+        "world", fixture, 2, 2, 0.15, 0.15};
+    REQUIRE(queue.submit(std::move(create)).get());
+
+    const auto output = workspace / "concept-1_0.png";
+    auto export_request = request(
+        chunkmap::CommandType::ConceptSliceExport,
+        workspace, "concept-export-2", "world");
+    export_request.payload = chunkmap::ConceptSliceExportPayload{{1, 0}, output, false};
+    auto exported = queue.submit(std::move(export_request)).get();
+    REQUIRE(exported);
+    CHECK(exported.value().data.at("coord") == nlohmann::json::array({1, 0}));
+    CHECK(std::filesystem::equivalent(
+        std::filesystem::path(exported.value().data.at("output").get<std::string>()), output));
+    CHECK_FALSE(exported.value().changes.project.has_value());
+    CHECK(std::filesystem::is_regular_file(output));
+    CHECK_FALSE(std::filesystem::exists(workspace / "output/world/concept/regions"));
 
     queue.stop_and_drain();
     std::filesystem::remove_all(workspace, error);
