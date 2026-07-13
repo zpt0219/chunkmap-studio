@@ -6,6 +6,7 @@ std::string command_name(CommandType type) {
     switch (type) {
     case CommandType::ProjectCreate: return "project init";
     case CommandType::ProjectOpen: return "project open";
+    case CommandType::ProjectCurrent: return "project current";
     case CommandType::ProjectGridSet: return "project grid";
     case CommandType::ProjectStatus: return "project status";
     case CommandType::ProjectValidate: return "project validate";

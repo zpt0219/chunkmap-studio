@@ -68,6 +68,16 @@ endif()
 assert_contract("${parser_output}" FALSE "usage" "missing_option_value")
 
 execute_process(
+    COMMAND "${CLI}" --json project current
+    RESULT_VARIABLE current_result
+    OUTPUT_VARIABLE current_output
+)
+if(current_result EQUAL 0)
+    message(FATAL_ERROR "Current project must fail when Desktop has no open project")
+endif()
+assert_contract("${current_output}" FALSE "project current" "no_project_open")
+
+execute_process(
     COMMAND "${CLI}" --json --project missing project status
     RESULT_VARIABLE project_result
     OUTPUT_VARIABLE project_output

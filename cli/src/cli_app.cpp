@@ -154,6 +154,15 @@ int CliApp::run_project() {
         request.project_name = command_line_.args[2];
         return execute(std::move(request));
     }
+    if (action == "current") {
+        if (command_line_.args.size() != 2U) {
+            return usage_error("project current does not accept arguments.");
+        }
+        if (command_line_.project_name) {
+            return usage_error("project current does not accept --project.");
+        }
+        return execute(make_request(chunkmap::CommandType::ProjectCurrent));
+    }
     if (action == "grid") {
         auto project = require_project();
         if (!project) return print_error("project grid", project.error());
@@ -376,6 +385,7 @@ void CliApp::print_help() const {
         << "Commands:\n"
         << "  project init <name> --concept <image> --columns <n> --rows <n>\n"
         << "  project open <name>\n"
+        << "  project current\n"
         << "  project grid --columns <n> --rows <n>\n"
         << "  project status\n  project validate\n"
         << "  prompt show <x,y>\n  prompt set <x,y> --file <path>\n"

@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <optional>
 #include <string>
 
 namespace chunkmap {
@@ -24,6 +25,7 @@ private:
         const CommandRequest& request, const CommandProgressCallback& progress = {});
 
     ProjectSession session_;
+    std::optional<ProjectKey> active_project_;
 };
 
 }  // namespace chunkmap

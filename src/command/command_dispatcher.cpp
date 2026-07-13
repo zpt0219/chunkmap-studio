@@ -98,8 +98,23 @@ Result<NeighborImages> document_neighbors(ProjectDocument& document, ChunkCoord 
 Result<CommandResult> CommandDispatcher::execute(
     const CommandRequest& request, const CommandProgressCallback& progress) {
     try {
-        ProjectService& service = session_.service(request.workspace);
         CommandResult result;
+
+        if (request.type == CommandType::ProjectCurrent) {
+            if (!active_project_) {
+                return Result<CommandResult>::failure(
+                    "no_project_open", "Desktop does not currently have a project open.");
+            }
+            result.data = {
+                {"name", active_project_->project_name},
+                {"workspace", active_project_->workspace.string()},
+            };
+            result.text = active_project_->project_name;
+            result.changes.project = active_project_;
+            return Result<CommandResult>::success(std::move(result));
+        }
+
+        ProjectService& service = session_.service(request.workspace);
 
         if (request.type == CommandType::ProjectCreate) {
             auto payload = require_payload<ProjectCreatePayload>(request);
@@ -126,6 +141,7 @@ Result<CommandResult> CommandDispatcher::execute(
             result.changes.project_changed = true;
             result.changes.concept_changed = true;
             set_project_change(result, request, create.name);
+            active_project_ = result.changes.project;
             return Result<CommandResult>::success(std::move(result));
         }
 
@@ -141,12 +157,17 @@ Result<CommandResult> CommandDispatcher::execute(
         set_project_change(result, request, project_name);
 
         switch (request.type) {
+        case CommandType::ProjectCurrent:
+            return Result<CommandResult>::failure(
+                "invalid_command_state", "Project current was not handled before project loading.");
+
         case CommandType::ProjectOpen:
             result.data = {{"project", config_json(project.config)},
                            {"path", project.paths.root().string()}};
             result.text = "Opened project " + project_name;
             result.project_snapshot = project;
             result.changes.project_changed = true;
+            active_project_ = result.changes.project;
             break;
 
         case CommandType::ProjectGridSet: {

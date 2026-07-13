@@ -39,6 +39,11 @@ flowchart TD
 `ProjectDocument`。同一个 workspace/project 的普通命令复用同一文档，不再每条命令
 调用 `open_project()`。
 
+`project current` 不读取进程启动参数，也不把普通 `--project` 命令临时加载的 document
+误认为 Desktop 当前项目。`CommandDispatcher` 单独记录最近一次成功的
+`ProjectCreate` / `ProjectOpen`，并以只读方式返回其 project 名称和 workspace；查询本身
+不加载或切换 project。Desktop 尚未打开 project 时返回 `no_project_open`。
+
 `ProjectDocument` 常驻内容：
 
 - `ProjectConfig` 与 `ProjectPaths`；

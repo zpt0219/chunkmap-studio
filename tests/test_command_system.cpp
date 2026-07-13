@@ -40,6 +40,17 @@ TEST_CASE("command codec preserves typed payload") {
     CHECK(payload->image == std::filesystem::path("/tmp/generated image.png"));
 }
 
+TEST_CASE("command codec preserves project current without a project name") {
+    auto original = request(
+        chunkmap::CommandType::ProjectCurrent, "/tmp/work space", "codec-current");
+    auto decoded = chunkmap::decode_command_request(
+        chunkmap::encode_command_request(original));
+    REQUIRE(decoded);
+    CHECK(decoded.value().type == chunkmap::CommandType::ProjectCurrent);
+    CHECK_FALSE(decoded.value().project_name.has_value());
+    CHECK(std::holds_alternative<std::monostate>(decoded.value().payload));
+}
+
 TEST_CASE("command codec preserves global prompt payload") {
     auto original = request(
         chunkmap::CommandType::GlobalPromptSet, "/tmp/work space", "codec-global", "world");
@@ -304,6 +315,50 @@ TEST_CASE("project open publishes a full project switch") {
     CHECK(opened.value().changes.project_changed);
     REQUIRE(opened.value().changes.project.has_value());
     CHECK(opened.value().changes.project->project_name == "world");
+
+    queue.stop_and_drain();
+    std::filesystem::remove_all(workspace, error);
+}
+
+TEST_CASE("project current tracks explicit project switches instead of session loads") {
+    const auto workspace = std::filesystem::temp_directory_path() /
+        "chunkmap-project-current";
+    std::error_code error;
+    std::filesystem::remove_all(workspace, error);
+
+    chunkmap::DocumentCommandQueue queue;
+    auto current = request(
+        chunkmap::CommandType::ProjectCurrent, workspace, "current-1");
+    auto empty = queue.submit(current).get();
+    REQUIRE_FALSE(empty);
+    CHECK(empty.error().code == "no_project_open");
+
+    for (const auto& name : {"world-a", "world-b"}) {
+        auto create = request(
+            chunkmap::CommandType::ProjectCreate, workspace,
+            std::string("create-") + name, name);
+        create.payload = chunkmap::ProjectCreatePayload{
+            name, std::filesystem::path(CHUNKMAP_TEST_SOURCE_DIR) / "fixtures/chunk.png",
+            2, 2, 0.15, 0.15};
+        REQUIRE(queue.submit(std::move(create)).get());
+    }
+
+    auto open = request(
+        chunkmap::CommandType::ProjectOpen, workspace, "current-2", "world-a");
+    REQUIRE(queue.submit(std::move(open)).get());
+
+    auto other_status = request(
+        chunkmap::CommandType::ProjectStatus, workspace, "current-3", "world-b");
+    REQUIRE(queue.submit(std::move(other_status)).get());
+
+    current.request_id = "current-4";
+    auto active = queue.submit(std::move(current)).get();
+    REQUIRE(active);
+    CHECK(active.value().data.at("name") == "world-a");
+    CHECK(active.value().data.at("workspace") ==
+          chunkmap::make_project_key(workspace, "world-a").workspace.string());
+    REQUIRE(active.value().changes.project.has_value());
+    CHECK(active.value().changes.project->project_name == "world-a");
 
     queue.stop_and_drain();
     std::filesystem::remove_all(workspace, error);

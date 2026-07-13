@@ -37,6 +37,16 @@ Switch a running Desktop instance to an existing project:
 ./build/cli/chunkmap --workspace "$PWD" project open my-world
 ```
 
+Query the project currently open in Desktop without supplying `--project`:
+
+```bash
+./build/cli/chunkmap --workspace "$PWD" --json project current
+```
+
+The command is read-only and returns `no_project_open` when Desktop has no open
+project. It reports the active project's name and workspace and never loads or
+switches a project.
+
 Before importing the first chunk image, the Concept grid can be corrected without
 recreating the project. Local chunk prompts must still be empty; the Global Prompt
 is preserved:

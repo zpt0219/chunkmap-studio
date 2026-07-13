@@ -25,6 +25,21 @@ run_chunkmap(
 )
 
 run_chunkmap(--json project open cli-world)
+execute_process(
+    COMMAND "${CLI}" --json project current
+    RESULT_VARIABLE current_result
+    OUTPUT_VARIABLE current_output
+    ERROR_VARIABLE current_error
+)
+if(NOT current_result EQUAL 0 OR NOT current_error STREQUAL "")
+    message(FATAL_ERROR "project current failed: ${current_error}")
+endif()
+string(JSON current_name GET "${current_output}" data name)
+string(JSON current_envelope_project GET "${current_output}" project)
+if(NOT current_name STREQUAL "cli-world" OR
+   NOT current_envelope_project STREQUAL "cli-world")
+    message(FATAL_ERROR "project current returned the wrong project: ${current_output}")
+endif()
 run_chunkmap(--project cli-world --json project grid --columns 3 --rows 2)
 
 run_chunkmap(--project cli-world --json chunk import 1,1 --image "${CONCEPT}")

@@ -12,6 +12,7 @@ namespace chunkmap {
 enum class CommandType {
     ProjectCreate,
     ProjectOpen,
+    ProjectCurrent,
     ProjectGridSet,
     ProjectStatus,
     ProjectValidate,

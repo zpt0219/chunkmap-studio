@@ -13,6 +13,7 @@ using nlohmann::json;
 Result<CommandType> parse_type(const std::string& name) {
     for (const auto type : {
              CommandType::ProjectCreate, CommandType::ProjectOpen,
+             CommandType::ProjectCurrent,
              CommandType::ProjectGridSet,
              CommandType::ProjectStatus, CommandType::ProjectValidate,
              CommandType::ConceptContext, CommandType::ConceptSliceExport,
@@ -171,6 +172,7 @@ Result<CommandRequest> decode_command_request(const json& value) {
             request.payload = CoordPayload{parse_coord(payload.at("coord"))};
             break;
         case CommandType::ProjectOpen:
+        case CommandType::ProjectCurrent:
         case CommandType::ProjectStatus:
         case CommandType::ProjectValidate:
         case CommandType::ConceptContext:
@@ -187,9 +189,12 @@ Result<CommandRequest> decode_command_request(const json& value) {
 
 json command_envelope(const CommandRequest& request,
                       const Result<CommandResult>& result) {
-    const json project = request.project_name ? json(*request.project_name) :
+    json project = request.project_name ? json(*request.project_name) :
         (request.type == CommandType::ProjectCreate
             ? json(std::get<ProjectCreatePayload>(request.payload).name) : json(nullptr));
+    if (project.is_null() && result && result.value().changes.project) {
+        project = result.value().changes.project->project_name;
+    }
     if (result) {
         return {{"schema_version", 1}, {"ok", true},
                 {"command", command_name(request.type)}, {"project", project},
