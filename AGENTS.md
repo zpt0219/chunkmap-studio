@@ -158,15 +158,28 @@ For a requested target coordinate:
   chunk write <x,y> --image /absolute/path/to/generated.png
 ```
 
-6. Inspect the Desktop result and apply both acceptance layers from the guide.
+6. Inspect the Desktop result at both levels defined by the guide.
    `seam inspect` verifies overlap only; it does not prove gameplay scale,
-   walkability, or visual composition. When needed, edit the Prompt, export fresh
-   context, and regenerate. A successful write immediately replaces the previous
-   formal image; there is no Accept step.
+   walkability, or visual composition. Report material visual issues to the user,
+   but do not automatically generate a second image. A successful write immediately
+   replaces the previous formal image in Desktop; there is no candidate preview or
+   Accept step.
+
+One explicit user generation request authorizes one image-generation attempt per
+requested Chunk. Write that result back immediately so the user can review it in
+Desktop. Do not silently retry, generate alternatives, or withhold the first result
+because of the agent's own visual preference. If the user requests a revision,
+translate durable semantic feedback into the Local Prompt as the region's current
+desired state, then export fresh context, generate once, and write once again. Keep
+the Local Prompt unchanged when the user asks only for another variation without
+changing regional intent. Do not append verbatim feedback, a feedback section, or
+feedback history to the project.
 
 When multiple adjacent Chunks share the same visual drift and the user requests
 replacement, follow the guide's dependency-order regeneration procedure. Use formal
-`chunk remove` and fresh contexts; never delete project images directly.
+`chunk remove` and fresh contexts; never delete project images directly. This explicit
+group request authorizes one generation and immediate writeback for each requested
+Chunk, not hidden alternatives for any coordinate.
 
 Never copy a generated image directly into `output/`. Always use `chunk import`
 or `chunk write` so the session validates and persists the formal image.

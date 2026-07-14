@@ -23,8 +23,9 @@ the Prompt text means and how it must be used.
    instructions.
 8. When generating a Chunk, add only the operational instructions required for the
    template, mask, and expected size. Do not reinterpret or expand its composition.
-9. Validate both technical continuity and gameplay-scale visual readability before
-   considering the Chunk complete.
+9. Write the single generated result back to Desktop, then validate technical
+   continuity and inspect gameplay-scale visual readability. Report visual concerns
+   to the user; do not automatically generate an alternative.
 
 If no Ready Chunk exists, do not invent a definitive visual style unless the user
 explicitly supplies one. Local Prompts may still be written from the Concept Map.
@@ -146,7 +147,23 @@ Before generating a Chunk, read this guide, then read the fresh `manifest.json`,
 The execution wrapper must preserve the authored intent, not become a third Prompt
 layer with independent creative direction.
 
-## 7. Visual acceptance: continuity and playability
+## 7. Single-generation writeback and user feedback
+
+Each explicit user request authorizes one image-generation attempt per requested
+Chunk. Write that result immediately as the formal Chunk so it is visible in Desktop.
+Do not create an unseen candidate, generate alternatives, or silently retry because
+the agent prefers a different visual result. Technical inspection happens after
+writeback and informs the user; it does not authorize a second generation.
+
+When the user requests a revision, first decide whether the feedback changes the
+region's durable semantic intent. If it does, rewrite the Local Prompt as a clean,
+positive description of the newly desired region, replacing superseded intent rather
+than appending the user's words. Then export fresh context, generate once, and write
+once. If the user asks only for another variation and does not change regional intent,
+leave the Local Prompt unchanged. Do not add a separate feedback section, raw feedback
+log, revision history, or candidate state to the project.
+
+## 8. Post-write inspection: continuity and playability
 
 Evaluate each generated Chunk at two levels:
 
@@ -157,14 +174,17 @@ Evaluate each generated Chunk at two levels:
    no panoramic or concept-art composition.
 
 A Seam difference of `0.0` proves only that overlap pixels match. It does not prove
-that scale, style, traversal, or composition is correct.
+that scale, style, traversal, or composition is correct. Surface those visual findings
+to the user without withholding the written Chunk or generating a replacement on the
+agent's own initiative.
 
 Cities are weak tests of the gameplay-space contract because streets and plazas
 naturally create walkable structure. Forest, mountain, coast, desert, and other
-wilderness Chunks are the best canaries. Reject or regenerate a wilderness Chunk
-that reads as a scenic overview even when its Seam is perfect.
+wilderness Chunks are the best canaries. Flag a wilderness Chunk that reads as a
+scenic overview even when its Seam is perfect, and wait for the user to request a
+revision before generating it again.
 
-## 8. Regenerating adjacent drifted Chunks
+## 9. Regenerating adjacent drifted Chunks
 
 When the user asks to replace multiple adjacent Chunks that share the same visual
 drift, do not let their old overlap pixels preserve that drift:
@@ -175,12 +195,14 @@ drift, do not let their old overlap pixels preserve that drift:
 3. Regenerate in dependency order, starting beside the good anchor.
 4. Export a fresh `chunk context` after every successful write so the next Chunk
    receives the new overlap pixels.
-5. Re-run technical and visual acceptance for the complete regenerated group.
+5. Generate once and write back immediately for each requested coordinate.
+6. Re-run technical validation and visual inspection for the complete regenerated
+   group, reporting concerns without silently retrying any coordinate.
 
 Do this only when replacement is requested. Do not add candidate history, revision
 state, or provenance to the project.
 
-## 9. Examples
+## 10. Examples
 
 Bad Local Prompt:
 
@@ -217,7 +239,7 @@ Good wilderness Local Prompt:
 The bad wilderness example specifies a scenic composition. The good example defines
 regional terrain and connectivity while leaving the detailed layout to the model.
 
-## 10. Local Prompt JSON transport
+## 11. Local Prompt JSON transport
 
 Bulk Local Prompt import uses:
 
@@ -232,7 +254,7 @@ Bulk Local Prompt import uses:
 Every project coordinate should appear exactly once when generating a complete
 Prompt set. Coordinate `(x, y)` uses zero-based column and row indices.
 
-## 11. Final checklist
+## 12. Final checklist
 
 Before writing Prompts or generating a Chunk, confirm:
 
@@ -248,7 +270,11 @@ Before writing Prompts or generating a Chunk, confirm:
 - only important cross-edge terrain and routes are constrained;
 - the generation-time wrapper adds operational constraints but no new creative
   composition language;
+- each requested Chunk was generated once and written immediately for Desktop review;
+- user feedback was normalized into current Local Prompt intent only when it changed
+  regional semantics, without a feedback log or hidden candidate;
 - text, labels, logos, UI, and diagonal architecture are excluded globally when
   appropriate to the selected visual style;
-- technical validation and gameplay-scale visual validation both passed;
+- technical validation passed and gameplay-scale visual inspection findings were
+  reported to the user;
 - all coordinates are valid, unique, and structurally accepted by the schema.
