@@ -65,6 +65,15 @@ project chunk size; later imports use the same validation and deterministic
   chunk import 2,2 --image /path/to/detail.png
 ```
 
+Delete a formal chunk image and return its coordinate to `Empty`:
+
+```bash
+./build/cli/chunkmap --project my-world chunk remove 2,2 --yes
+```
+
+The Chunk Inspector offers the same operation through `Delete Chunk`, with a
+confirmation prompt. Both routes submit the same Desktop-hosted command.
+
 Inspect and validate the project:
 
 ```bash

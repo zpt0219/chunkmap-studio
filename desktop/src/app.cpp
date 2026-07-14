@@ -723,6 +723,10 @@ void App::draw_chunk_tab() {
             reveal_file(project_->paths.chunk_image(*selected_));
         }
     }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!ready || pending_remove_request_id_.has_value());
+    if (ImGui::Button("Delete Chunk")) remove_selected_chunk();
+    ImGui::EndDisabled();
     const bool can_generate = project_->config.has_chunk_size() &&
                               ready_neighbor_count(*selected_) > 0;
     ImGui::Separator();
@@ -758,12 +762,16 @@ void App::draw_prompt_tab() {
     ImGui::Spacing();
     ImGui::SeparatorText("Local Chunk Prompt");
     ImGui::TextDisabled("Content and layout for chunk %s only.", coord_label(*selected_).c_str());
+    ImGui::PushID(selected_->x);
+    ImGui::PushID(selected_->y);
     if (ImGui::InputTextMultiline(
             "##local_chunk_prompt_editor", &prompt_buffer_, ImVec2(-1.0F, editor_height),
             ImGuiInputTextFlags_AllowTabInput | ImGuiInputTextFlags_WordWrap)) {
         prompt_dirty_ = true;
         prompt_last_edit_ = ImGui::GetTime();
     }
+    ImGui::PopID();
+    ImGui::PopID();
     if (ImGui::IsItemDeactivatedAfterEdit()) flush_prompt();
 
     ImGui::Spacing();
@@ -1229,6 +1237,19 @@ void App::import_image() {
     error_message_.clear();
 }
 
+void App::remove_selected_chunk() {
+    if (!project_ || !selected_ || !chunk_ready(*selected_)) return;
+    const std::string message = "Delete chunk " + coord_label(*selected_) +
+        "? Its formal image will be removed and the chunk will become Empty.";
+    if (tinyfd_messageBox("Delete Chunk", message.c_str(), "yesno", "warning", 0) != 1) return;
+    auto request = make_request(chunkmap::CommandType::ChunkRemove);
+    request.payload = chunkmap::CoordPayload{*selected_};
+    pending_remove_request_id_ = request.request_id;
+    command_host_.submit(std::move(request));
+    status_message_ = "Deleting chunk image...";
+    error_message_.clear();
+}
+
 void App::export_full_map() {
     if (!project_ || pending_export_request_id_) return;
     flush_prompt();
@@ -1388,12 +1409,16 @@ void App::poll_commands() {
                    log_detail.str());
         const bool pending_import = pending_import_request_id_ &&
             completion.request.request_id == *pending_import_request_id_;
+        const bool pending_remove = pending_remove_request_id_ &&
+            completion.request.request_id == *pending_remove_request_id_;
         const bool pending_export = pending_export_request_id_ &&
             completion.request.request_id == *pending_export_request_id_;
         const bool pending_concept_export = pending_concept_export_request_id_ &&
             completion.request.request_id == *pending_concept_export_request_id_;
-        if (from_desktop && !pending_import && !pending_export && !pending_concept_export) continue;
+        if (from_desktop && !pending_import && !pending_remove && !pending_export &&
+            !pending_concept_export) continue;
         if (pending_import) pending_import_request_id_.reset();
+        if (pending_remove) pending_remove_request_id_.reset();
         if (pending_export) pending_export_request_id_.reset();
         if (pending_concept_export) pending_concept_export_request_id_.reset();
         if (!completion.result) {
@@ -1471,6 +1496,8 @@ void App::poll_commands() {
             status_message_ = result.data.contains("global_prompt_action")
                 ? "First image imported. Ask Codex to create the project Global Prompt from it."
                 : "Chunk image imported";
+        } else if (pending_remove) {
+            status_message_ = "Chunk image deleted";
         } else {
             status_message_ = "CLI command applied";
         }

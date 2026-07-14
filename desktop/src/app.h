@@ -50,6 +50,7 @@ private:
     void fit_map(const ImVec2& available);
     void focus_selected(const ImVec2& available);
     void import_image();
+    void remove_selected_chunk();
     void export_full_map();
     void export_concept_slice();
     void export_generation_context();
@@ -118,6 +119,7 @@ private:
     std::string status_message_;
     std::string error_message_;
     std::optional<std::string> pending_import_request_id_;
+    std::optional<std::string> pending_remove_request_id_;
     std::optional<std::string> pending_export_request_id_;
     std::optional<std::string> pending_concept_export_request_id_;
     std::optional<std::filesystem::path> last_export_path_;

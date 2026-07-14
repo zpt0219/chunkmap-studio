@@ -129,6 +129,22 @@ foreach(required_file
     endif()
 endforeach()
 
+execute_process(
+    COMMAND "${CLI}" --workspace "${WORKSPACE}" --project phase3-world --json chunk remove 0,1
+    RESULT_VARIABLE remove_without_yes_result
+    OUTPUT_VARIABLE remove_without_yes_output
+)
+if(remove_without_yes_result EQUAL 0 OR NOT remove_without_yes_output MATCHES "requires --yes")
+    message(FATAL_ERROR "Chunk remove must require --yes: ${remove_without_yes_output}")
+endif()
+run_chunkmap(--project phase3-world --json chunk remove 0,1 --yes)
+if(NOT LAST_OUTPUT MATCHES "\\\"chunk\\\":\\[0,1\\]")
+    message(FATAL_ERROR "Chunk remove did not report its coordinate: ${LAST_OUTPUT}")
+endif()
+if(EXISTS "${project_root}/chunks/0_1.png")
+    message(FATAL_ERROR "Chunk remove did not delete the formal image")
+endif()
+
 foreach(required_handoff
         "prompt-authoring-guide.md"
         "concept/regions/0_0.png"
