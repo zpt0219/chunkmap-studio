@@ -20,9 +20,13 @@ std::string command_name(CommandType type) {
     case CommandType::ChunkImport: return "chunk import";
     case CommandType::ChunkContext: return "chunk context";
     case CommandType::ChunkWrite: return "chunk write";
+    case CommandType::ChunkAlignmentPreview: return "chunk alignment preview";
+    case CommandType::ChunkShiftApply: return "chunk shift apply";
     case CommandType::ChunkShow: return "chunk show";
     case CommandType::ChunkRemove: return "chunk remove";
     case CommandType::SeamInspect: return "seam inspect";
+    case CommandType::SeamSet: return "seam set";
+    case CommandType::SeamReset: return "seam reset";
     case CommandType::MapExport: return "map export";
     }
     return "unknown";

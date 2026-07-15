@@ -1,6 +1,6 @@
 # ChunkMap Prompt Authoring Guide
 
-Specification version: 2
+Specification version: 3
 
 This file is the semantic source of truth for authoring ChunkMap Global and Local
 Prompts and for turning them into an image-generation request. Read it completely
@@ -118,7 +118,7 @@ neighbor template.
 
 Instruction priority is:
 
-1. protected neighbor pixels and generation mask;
+1. protected 1px neighbor anchors and generation mask;
 2. Global Prompt visual and gameplay-space rules;
 3. Local Prompt regional intent;
 4. model-selected detail and variation.
@@ -132,7 +132,9 @@ Before generating a Chunk, read this guide, then read the fresh `manifest.json`,
 `prompt.txt`, `template.png`, and `mask.png` returned by `chunk context`.
 
 - Use `template.png` as the edit target and `mask.png` as the generation boundary.
-- Preserve black-mask/protected pixels exactly and generate only white-mask pixels.
+- Preserve black-mask pixels exactly and generate only white-mask pixels. Black is
+  limited to the outermost 1px neighbor anchor; the wider overlap remains generative
+  and is later composed non-destructively by placement and Seam parameters.
 - Use `prompt.txt` as the semantic source. It already combines the Global and Local
   Prompts.
 - A generation-time wrapper may identify input roles, require the manifest
@@ -167,16 +169,17 @@ log, revision history, or candidate state to the project.
 
 Evaluate each generated Chunk at two levels:
 
-1. Technical: expected dimensions, successful formal `chunk write`, protected
-   pixels, Ready state, project validation, and relevant Seam results.
+1. Technical: expected dimensions, successful formal `chunk write`, protected 1px
+   anchors, Ready state, saved placement, project validation, and relevant Seam result.
 2. Visual: fixed gameplay camera, consistent player/environment scale, connected
    walkable ground, readable routes and entrances, clear collision boundaries, and
    no panoramic or concept-art composition.
 
-A Seam difference of `0.0` proves only that overlap pixels match. It does not prove
-that scale, style, traversal, or composition is correct. Surface those visual findings
-to the user without withholding the written Chunk or generating a replacement on the
-agent's own initiative.
+A low raw Seam difference proves only that the two overlap sources are similar. The
+actual Desktop result also depends on placement, the editable polyline, and feather
+width; neither raw nor composited continuity proves that scale, style, traversal, or
+composition is correct. Surface those visual findings to the user without withholding
+the written Chunk or generating a replacement on the agent's own initiative.
 
 Cities are weak tests of the gameplay-space contract because streets and plazas
 naturally create walkable structure. Forest, mountain, coast, desert, and other
@@ -187,14 +190,14 @@ revision before generating it again.
 ## 9. Regenerating adjacent drifted Chunks
 
 When the user asks to replace multiple adjacent Chunks that share the same visual
-drift, do not let their old overlap pixels preserve that drift:
+drift, rebuild their generation context in a clear dependency order:
 
 1. Remove the affected formal images through `chunk remove <x,y> --yes`; never
    delete files directly from `output/`.
 2. Keep at least one good Ready neighbor as the visual and scale anchor.
 3. Regenerate in dependency order, starting beside the good anchor.
 4. Export a fresh `chunk context` after every successful write so the next Chunk
-   receives the new overlap pixels.
+   receives current placed neighbor pixels and 1px anchors.
 5. Generate once and write back immediately for each requested coordinate.
 6. Re-run technical validation and visual inspection for the complete regenerated
    group, reporting concerns without silently retrying any coordinate.

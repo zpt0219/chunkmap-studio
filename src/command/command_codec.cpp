@@ -21,8 +21,10 @@ Result<CommandType> parse_type(const std::string& name) {
              CommandType::PromptShow, CommandType::PromptSet,
              CommandType::GlobalPromptShow, CommandType::GlobalPromptSet,
              CommandType::ChunkImport, CommandType::ChunkContext, CommandType::ChunkWrite,
+             CommandType::ChunkAlignmentPreview, CommandType::ChunkShiftApply,
              CommandType::ChunkShow, CommandType::ChunkRemove,
-             CommandType::SeamInspect, CommandType::MapExport}) {
+             CommandType::SeamInspect, CommandType::SeamSet,
+             CommandType::SeamReset, CommandType::MapExport}) {
         if (command_name(type) == name) return Result<CommandType>::success(type);
     }
     return Result<CommandType>::failure("unknown_command", "Unknown command: " + name);
@@ -30,6 +32,19 @@ Result<CommandType> parse_type(const std::string& name) {
 
 json coord_value(ChunkCoord coord) {
     return json::array({coord.x, coord.y});
+}
+
+json seam_key_value(const SeamKey& key) {
+    return {{"first", coord_value(key.first)},
+            {"direction", seam_direction_name(key.direction)}};
+}
+
+ChunkCoord parse_coord(const json& value);
+
+SeamKey parse_seam_key(const json& value) {
+    return {parse_coord(value.at("first")),
+            value.at("direction").get<std::string>() == "right"
+                ? SeamDirection::Right : SeamDirection::Bottom};
 }
 
 ChunkCoord parse_coord(const json& value) {
@@ -46,11 +61,17 @@ json changes_json(const ChangeSet& changes) {
     for (const auto coord : changes.changed_prompts) prompts.push_back(coord_value(coord));
     json contexts = json::array();
     for (const auto& path : changes.changed_contexts) contexts.push_back(path.string());
+    json placements = json::array();
+    for (const auto coord : changes.changed_placements) placements.push_back(coord_value(coord));
+    json seams = json::array();
+    for (const auto& key : changes.changed_seams) seams.push_back(seam_key_value(key));
     return {
         {"project_changed", changes.project_changed},
         {"concept_changed", changes.concept_changed},
         {"global_prompt_changed", changes.global_prompt_changed},
         {"changed_chunks", chunks},
+        {"changed_placements", placements},
+        {"changed_seams", seams},
         {"changed_prompts", prompts},
         {"changed_contexts", contexts},
     };
@@ -79,10 +100,24 @@ json encode_command_request(const CommandRequest& request) {
             payload = {{"path", value.path.string()}};
         } else if constexpr (std::is_same_v<T, ChunkImagePayload>) {
             payload = {{"coord", coord_value(value.coord)}, {"image", value.image.string()}};
+        } else if constexpr (std::is_same_v<T, ChunkAlignmentPayload>) {
+            payload = {{"coord", coord_value(value.coord)},
+                       {"offset", {value.offset_x, value.offset_y}},
+                       {"automatic", value.automatic}};
         } else if constexpr (std::is_same_v<T, SeamInspectPayload>) {
             payload = {{"coord", coord_value(value.coord)},
                        {"direction", value.direction == CommandSeamDirection::Right
                            ? "right" : "bottom"}};
+        } else if constexpr (std::is_same_v<T, SeamSetPayload>) {
+            json points = json::array();
+            for (const auto& point : value.seam.points) {
+                points.push_back({point.along, point.across});
+            }
+            payload = {{"key", seam_key_value(value.seam.key)},
+                       {"feather_width", value.seam.feather_width},
+                       {"points", std::move(points)}};
+        } else if constexpr (std::is_same_v<T, SeamResetPayload>) {
+            payload = {{"key", seam_key_value(value.key)}};
         } else if constexpr (std::is_same_v<T, MapExportPayload>) {
             payload = {{"output", value.output.string()}, {"overwrite", value.overwrite}};
         } else if constexpr (std::is_same_v<T, ConceptSliceExportPayload>) {
@@ -148,11 +183,33 @@ Result<CommandRequest> decode_command_request(const json& value) {
             request.payload = ChunkImagePayload{
                 parse_coord(payload.at("coord")), payload.at("image").get<std::string>()};
             break;
+        case CommandType::ChunkAlignmentPreview:
+        case CommandType::ChunkShiftApply:
+            request.payload = ChunkAlignmentPayload{
+                parse_coord(payload.at("coord")),
+                payload.at("offset").at(0).get<int>(),
+                payload.at("offset").at(1).get<int>(),
+                payload.at("automatic").get<bool>()};
+            break;
         case CommandType::SeamInspect:
             request.payload = SeamInspectPayload{
                 parse_coord(payload.at("coord")),
                 payload.at("direction").get<std::string>() == "right"
                     ? CommandSeamDirection::Right : CommandSeamDirection::Bottom};
+            break;
+        case CommandType::SeamSet: {
+            SeamDefinition seam;
+            seam.key = parse_seam_key(payload.at("key"));
+            seam.feather_width = payload.at("feather_width").get<int>();
+            for (const auto& point : payload.at("points")) {
+                seam.points.push_back(
+                    {point.at(0).get<double>(), point.at(1).get<double>()});
+            }
+            request.payload = SeamSetPayload{std::move(seam)};
+            break;
+        }
+        case CommandType::SeamReset:
+            request.payload = SeamResetPayload{parse_seam_key(payload.at("key"))};
             break;
         case CommandType::MapExport:
             request.payload = MapExportPayload{

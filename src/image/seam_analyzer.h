@@ -2,14 +2,10 @@
 
 #include "core/result.h"
 #include "image/image_buffer.h"
+#include "model/layout_state.h"
 #include "model/project_config.h"
 
 namespace chunkmap {
-
-enum class SeamDirection {
-    Right,
-    Bottom,
-};
 
 struct SeamAnalysis {
     SeamDirection direction = SeamDirection::Right;

@@ -64,20 +64,21 @@ chunks/<x>_<y>.png     # Ready only
 ```text
 decode input
   -> initialize/check chunk size
-  -> deterministic 1px normalization
-  -> generated write restores opaque protected pixels from fresh template
-  -> atomic write chunks/<x>_<y>.png
+  -> require exact dimensions
+  -> copy original PNG bytes to chunks/<x>_<y>.png
+  -> generated write computes and stores placement offset
   -> update one ChunkDocument
-  -> upload the same in-memory ImageBuffer to one Desktop texture
+  -> render source texture + overlap-only Seam patches
 ```
 
 `chunk import` 不要求邻居；`chunk write` 要求至少一个 Ready 正交邻居。两者成功后都是
-普通 Ready chunk。代码不会构建 Composite、metadata 或 Seam cache。
+普通 Ready chunk。代码不会构建 Composite、metadata 或项目内 Seam 图片 cache。
 
 继续阅读：
 
 - `src/image/image_buffer.*`：RGBA8 + stb PNG；
-- `src/image/image_pipeline.*`：geometry、Concept slicing、normalization、template；
+- `src/image/image_pipeline.*`：geometry、Concept slicing、generation template；
+- `src/image/layout_renderer.*`：placement sampling、折线 Seam 与 overlap patch；
 - `src/image/seam_analyzer.*`：纯内存 Seam metrics/previews；
 - `desktop/src/gl_texture.*`：按需 texture cache 与内存直传。
 

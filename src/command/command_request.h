@@ -1,6 +1,6 @@
 #pragma once
 
-#include "model/chunk_coord.h"
+#include "model/layout_state.h"
 
 #include <filesystem>
 #include <optional>
@@ -26,9 +26,13 @@ enum class CommandType {
     ChunkImport,
     ChunkContext,
     ChunkWrite,
+    ChunkAlignmentPreview,
+    ChunkShiftApply,
     ChunkShow,
     ChunkRemove,
     SeamInspect,
+    SeamSet,
+    SeamReset,
     MapExport,
 };
 
@@ -68,6 +72,13 @@ struct ChunkImagePayload {
     std::filesystem::path image;
 };
 
+struct ChunkAlignmentPayload {
+    ChunkCoord coord;
+    int offset_x = 0;
+    int offset_y = 0;
+    bool automatic = false;
+};
+
 enum class CommandSeamDirection {
     Right,
     Bottom,
@@ -76,6 +87,14 @@ enum class CommandSeamDirection {
 struct SeamInspectPayload {
     ChunkCoord coord;
     CommandSeamDirection direction = CommandSeamDirection::Right;
+};
+
+struct SeamSetPayload {
+    SeamDefinition seam;
+};
+
+struct SeamResetPayload {
+    SeamKey key;
 };
 
 struct MapExportPayload {
@@ -98,7 +117,10 @@ using CommandPayload = std::variant<
     GlobalPromptSetPayload,
     PathPayload,
     ChunkImagePayload,
+    ChunkAlignmentPayload,
     SeamInspectPayload,
+    SeamSetPayload,
+    SeamResetPayload,
     MapExportPayload,
     ConceptSliceExportPayload>;
 

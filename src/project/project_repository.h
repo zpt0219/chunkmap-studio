@@ -16,10 +16,12 @@ public:
 
     Result<Project> load(const std::string& project_name) const;
     Result<void> save(const Project& project) const;
+    Result<void> save_placements(const Project& project) const;
+    Result<void> save_seam(const Project& project, SeamKey key) const;
+    Result<void> remove_seam(const Project& project, SeamKey key) const;
 
 private:
     WorkspacePaths workspace_paths_;
 };
 
 }  // namespace chunkmap
-

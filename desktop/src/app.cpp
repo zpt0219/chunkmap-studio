@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include "image/image_buffer.h"
+#include "image/image_registration.h"
 #include "ui/map_geometry.h"
 
 #include <imgui.h>
@@ -106,12 +107,14 @@ void App::draw() {
     poll_commands();
     if (!show_inspector_ || ImGui::GetIO().AppFocusLost) {
         concept_comparison_.cancel();
+        reset_alignment_preview();
     }
     draw_main_menu_bar();
     draw_dockspace();
     if (show_map_controls_) draw_map_controls();
     draw_map();
     if (show_inspector_) draw_inspector();
+    if (show_seam_editor_) draw_seam_editor();
     if (show_log_) draw_log_panel();
     draw_new_project_modal();
     draw_project_settings_modal();
@@ -443,11 +446,44 @@ void App::draw_map() {
         for (int y = 0; y < project_->config.rows; ++y) {
             for (int x = 0; x < project_->config.columns; ++x) {
                 const chunkmap::ChunkCoord coord{x, y};
-                if (GlTexture* chunk = textures_.get(project_->paths.chunk_image(coord))) {
+                GlTexture* chunk = alignment_preview_coord_ == coord &&
+                        alignment_preview_texture_.id() != 0
+                    ? &alignment_preview_texture_
+                    : textures_.get(project_->paths.chunk_image(coord));
+                if (chunk) {
+                    const bool transient = chunk == &alignment_preview_texture_;
+                    const auto placement = project_->layout.placement(coord);
+                    const ImVec2 uv0 = transient ? ImVec2(0.0F, 0.0F) : ImVec2(
+                        -static_cast<float>(placement.offset_x) / chunk_width,
+                        -static_cast<float>(placement.offset_y) / chunk_height);
+                    const ImVec2 uv1 = transient ? ImVec2(1.0F, 1.0F) : ImVec2(
+                        static_cast<float>(chunk_width - placement.offset_x) / chunk_width,
+                        static_cast<float>(chunk_height - placement.offset_y) / chunk_height);
                     draw->AddImage(texture_id(*chunk),
                         to_screen(static_cast<float>(x * step_x), static_cast<float>(y * step_y)),
                         to_screen(static_cast<float>(x * step_x + chunk_width),
-                                  static_cast<float>(y * step_y + chunk_height)));
+                                  static_cast<float>(y * step_y + chunk_height)), uv0, uv1);
+                }
+            }
+        }
+        for (const auto direction : {chunkmap::SeamDirection::Right,
+                                     chunkmap::SeamDirection::Bottom}) {
+            for (int y = 0; y < project_->config.rows; ++y) {
+                for (int x = 0; x < project_->config.columns; ++x) {
+                    const chunkmap::SeamKey key{{x, y}, direction};
+                    const auto found = seam_textures_.find(key);
+                    if (found == seam_textures_.end() || !found->second ||
+                        found->second->id() == 0) continue;
+                    const auto second = chunkmap::seam_second(key);
+                    const float left = static_cast<float>(
+                        direction == chunkmap::SeamDirection::Right
+                            ? second.x * step_x : x * step_x);
+                    const float top = static_cast<float>(
+                        direction == chunkmap::SeamDirection::Bottom
+                            ? second.y * step_y : y * step_y);
+                    draw->AddImage(texture_id(*found->second), to_screen(left, top),
+                        to_screen(left + found->second->width(),
+                                  top + found->second->height()));
                 }
             }
         }
@@ -695,14 +731,26 @@ void App::draw_chunk_tab() {
     ImGui::Spacing();
     const auto preview_path = ready ? project_->paths.chunk_image(*selected_)
                                     : project_->paths.concept_source();
-    if (GlTexture* preview = textures_.get(preview_path)) {
+    GlTexture* preview = ready && alignment_preview_coord_ == *selected_ &&
+            alignment_preview_texture_.id() != 0
+        ? &alignment_preview_texture_
+        : textures_.get(preview_path);
+    if (preview) {
         const float width = std::max(1.0F, ImGui::GetContentRegionAvail().x);
         const float aspect = ready
             ? static_cast<float>(preview->height()) / preview->width()
             : static_cast<float>(project_->config.columns) / project_->config.rows;
         const float height = std::min(260.0F, width * aspect);
         if (ready) {
-            ImGui::Image(texture_id(*preview), ImVec2(width, height));
+            const bool transient = preview == &alignment_preview_texture_;
+            const auto placement = project_->layout.placement(*selected_);
+            const ImVec2 uv0 = transient ? ImVec2(0.0F, 0.0F) : ImVec2(
+                -static_cast<float>(placement.offset_x) / preview->width(),
+                -static_cast<float>(placement.offset_y) / preview->height());
+            const ImVec2 uv1 = transient ? ImVec2(1.0F, 1.0F) : ImVec2(
+                static_cast<float>(preview->width() - placement.offset_x) / preview->width(),
+                static_cast<float>(preview->height() - placement.offset_y) / preview->height());
+            ImGui::Image(texture_id(*preview), ImVec2(width, height), uv0, uv1);
         } else {
             const ImVec2 uv0(
                 static_cast<float>(selected_->x) / project_->config.columns,
@@ -711,6 +759,106 @@ void App::draw_chunk_tab() {
                 static_cast<float>(selected_->x + 1) / project_->config.columns,
                 static_cast<float>(selected_->y + 1) / project_->config.rows);
             ImGui::Image(texture_id(*preview), ImVec2(width, height), uv0, uv1);
+        }
+    }
+    if (ready && project_->config.has_chunk_size()) {
+        auto limits = chunkmap::ImageRegistration::limits(project_->config);
+        const int maximum_x = limits ? limits.value().maximum_x : 0;
+        const int maximum_y = limits ? limits.value().maximum_y : 0;
+        const bool alignment_pending = pending_alignment_preview_request_id_.has_value() ||
+                                       pending_alignment_apply_request_id_.has_value();
+        ImGui::Spacing();
+        ImGui::SeparatorText("ALIGNMENT");
+        ImGui::TextDisabled(
+            "Preview a translation. Positive X moves right; positive Y moves down.");
+        bool offset_changed = false;
+        ImGui::SetNextItemWidth(130.0F);
+        offset_changed |= ImGui::InputInt("Horizontal (px)", &alignment_offset_x_);
+        ImGui::SetNextItemWidth(130.0F);
+        offset_changed |= ImGui::InputInt("Vertical (px)", &alignment_offset_y_);
+        alignment_offset_x_ = std::clamp(alignment_offset_x_, -maximum_x, maximum_x);
+        alignment_offset_y_ = std::clamp(alignment_offset_y_, -maximum_y, maximum_y);
+        if (offset_changed) {
+            alignment_comparison_.reset();
+            alignment_result_choice_ = 0;
+            const auto saved = project_->layout.placement(*selected_);
+            if (alignment_offset_x_ == saved.offset_x &&
+                alignment_offset_y_ == saved.offset_y) {
+                alignment_preview_coord_.reset();
+                alignment_preview_texture_.reset();
+                rebuild_seam_textures(*selected_, saved);
+            } else {
+                request_alignment_preview(false);
+            }
+        }
+        ImGui::TextDisabled("Safe range: X [%d, %d], Y [%d, %d]",
+                            -maximum_x, maximum_x, -maximum_y, maximum_y);
+        ImGui::BeginDisabled(ready_neighbor_count(*selected_) == 0 || alignment_pending);
+        if (ImGui::Button("Auto")) request_alignment_preview(true);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+            ImGui::SetTooltip("Find a conservative translation from Ready neighbors.");
+        }
+        ImGui::SameLine();
+        const bool has_alignment = alignment_preview_coord_ == *selected_ &&
+                                   alignment_preview_texture_.id() != 0;
+        const auto saved_placement = project_->layout.placement(*selected_);
+        ImGui::BeginDisabled((!has_alignment && alignment_offset_x_ == saved_placement.offset_x &&
+                              alignment_offset_y_ == saved_placement.offset_y) || alignment_pending);
+        if (ImGui::Button("Reset")) reset_alignment_preview();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!has_alignment || alignment_pending ||
+                             (alignment_offset_x_ == saved_placement.offset_x &&
+                              alignment_offset_y_ == saved_placement.offset_y));
+        if (ImGui::Button("Save Placement")) apply_alignment_shift();
+        ImGui::EndDisabled();
+        if (pending_alignment_preview_request_id_) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("Previewing...");
+        } else if (pending_alignment_apply_request_id_) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("Applying...");
+        }
+        if (alignment_comparison_) {
+            ImGui::SetNextItemWidth(180.0F);
+            if (ImGui::Combo("Preview result", &alignment_result_choice_,
+                             "Best of both\0Low-resolution 2D\0Projection\0")) {
+                preview_alignment_candidate();
+            }
+            constexpr ImGuiTableFlags comparison_flags =
+                ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_SizingStretchProp;
+            if (ImGui::BeginTable("##alignment_comparison", 4, comparison_flags)) {
+                ImGui::TableSetupColumn("Method");
+                ImGui::TableSetupColumn("Offset");
+                ImGui::TableSetupColumn("Improvement");
+                ImGui::TableSetupColumn("Auto");
+                ImGui::TableHeadersRow();
+                const auto row = [&](const char* name,
+                                     const char* method,
+                                     const AlignmentCandidateSummary& candidate) {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    const bool selected = alignment_comparison_->selected_method == method;
+                    ImGui::TextUnformatted((std::string(selected ? "* " : "") + name).c_str());
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::Text("%+d, %+d", candidate.offset_x, candidate.offset_y);
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::Text("%.1f%%", candidate.relative_improvement * 100.0);
+                    ImGui::TableSetColumnIndex(3);
+                    ImGui::TextUnformatted(candidate.accepted ? "Accepted" : "Rejected");
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                        ImGui::SetTooltip("Common validation score: %.3f", candidate.score);
+                    }
+                };
+                row("Low-res 2D", "low_resolution_2d",
+                    alignment_comparison_->low_resolution);
+                row("Projection", "projection",
+                    alignment_comparison_->projection);
+                ImGui::EndTable();
+            }
+            ImGui::TextDisabled("* Auto-selected result after the confidence gate");
         }
     }
     ImGui::Spacing();
@@ -842,6 +990,8 @@ void App::draw_seam_tab() {
             ImGui::Image(texture_id(texture), ImVec2(width, width * texture.height() / texture.width()));
         }
     }
+    ImGui::Spacing();
+    if (ImGui::Button("Edit Seam...")) open_seam_editor();
 }
 
 void App::draw_new_project_modal() {
@@ -1078,14 +1228,19 @@ void App::apply_project_snapshot(chunkmap::Project project, bool reset_selection
     change_grid_columns_ = project_->config.columns;
     change_grid_rows_ = project_->config.rows;
     concept_comparison_.cancel();
+    reset_alignment_preview();
     selected_.reset();
     prompt_buffer_.clear();
     prompt_dirty_ = false;
     global_prompt_buffer_.clear();
     global_prompt_dirty_ = false;
     seam_analysis_.reset();
+    seam_textures_.clear();
+    seam_preview_sources_.clear();
+    show_seam_editor_ = false;
     last_export_path_.reset();
     textures_.clear();
+    rebuild_seam_textures();
     fit_requested_ = true;
     status_message_ = "Project opened";
     error_message_.clear();
@@ -1116,7 +1271,12 @@ void App::select_chunk(chunkmap::ChunkCoord coord) {
     if (!project_ || !project_->config.contains(coord) || selected_ == coord) return;
     flush_prompt();
     concept_comparison_.cancel();
+    reset_alignment_preview();
     selected_ = coord;
+    seam_preview_sources_.clear();
+    const auto placement = project_->layout.placement(coord);
+    alignment_offset_x_ = placement.offset_x;
+    alignment_offset_y_ = placement.offset_y;
     auto request = make_request(chunkmap::CommandType::PromptShow);
     request.payload = chunkmap::CoordPayload{coord};
     auto prompt = command_host_.submit_and_wait(std::move(request));
@@ -1250,6 +1410,92 @@ void App::remove_selected_chunk() {
     error_message_.clear();
 }
 
+void App::request_alignment_preview(bool automatic) {
+    if (!project_ || !selected_ || !chunk_ready(*selected_) ||
+        pending_alignment_apply_request_id_) {
+        return;
+    }
+    if (automatic && ready_neighbor_count(*selected_) == 0) return;
+    auto request = make_request(chunkmap::CommandType::ChunkAlignmentPreview);
+    request.payload = chunkmap::ChunkAlignmentPayload{
+        *selected_, alignment_offset_x_, alignment_offset_y_, automatic};
+    pending_alignment_preview_request_id_ = request.request_id;
+    command_host_.submit(std::move(request));
+    status_message_ = automatic ? "Finding automatic alignment..." :
+                                  "Updating alignment preview...";
+    error_message_.clear();
+}
+
+void App::reset_alignment_preview() {
+    const bool had_preview = alignment_preview_coord_.has_value();
+    const auto preview_coord = alignment_preview_coord_;
+    const auto placement = project_ && selected_
+        ? project_->layout.placement(*selected_) : chunkmap::ChunkPlacement{};
+    alignment_offset_x_ = placement.offset_x;
+    alignment_offset_y_ = placement.offset_y;
+    alignment_preview_coord_.reset();
+    alignment_preview_texture_.reset();
+    pending_alignment_preview_request_id_.reset();
+    alignment_comparison_.reset();
+    alignment_result_choice_ = 0;
+    if (had_preview && preview_coord) {
+        rebuild_seam_textures(*preview_coord, placement);
+    }
+}
+
+void App::preview_alignment_candidate() {
+    if (!alignment_comparison_) return;
+    const AlignmentCandidateSummary* candidate = nullptr;
+    if (alignment_result_choice_ == 1) {
+        candidate = &alignment_comparison_->low_resolution;
+    } else if (alignment_result_choice_ == 2) {
+        candidate = &alignment_comparison_->projection;
+    } else {
+        alignment_offset_x_ = alignment_comparison_->selected_offset_x;
+        alignment_offset_y_ = alignment_comparison_->selected_offset_y;
+        const auto saved = project_ && selected_
+            ? project_->layout.placement(*selected_) : chunkmap::ChunkPlacement{};
+        if (alignment_offset_x_ == saved.offset_x && alignment_offset_y_ == saved.offset_y) {
+            alignment_preview_coord_.reset();
+            alignment_preview_texture_.reset();
+            pending_alignment_preview_request_id_.reset();
+            if (selected_) rebuild_seam_textures(*selected_, saved);
+            return;
+        }
+        request_alignment_preview(false);
+        return;
+    }
+    alignment_offset_x_ = candidate->offset_x;
+    alignment_offset_y_ = candidate->offset_y;
+    const auto saved = project_ && selected_
+        ? project_->layout.placement(*selected_) : chunkmap::ChunkPlacement{};
+    if (alignment_offset_x_ == saved.offset_x && alignment_offset_y_ == saved.offset_y) {
+        alignment_preview_coord_.reset();
+        alignment_preview_texture_.reset();
+        pending_alignment_preview_request_id_.reset();
+        if (selected_) rebuild_seam_textures(*selected_, saved);
+        return;
+    }
+    request_alignment_preview(false);
+}
+
+void App::apply_alignment_shift() {
+    if (!project_ || !selected_ || !chunk_ready(*selected_) ||
+        pending_alignment_preview_request_id_ || pending_alignment_apply_request_id_ ||
+        alignment_preview_coord_ != *selected_ || alignment_preview_texture_.id() == 0 ||
+        (alignment_offset_x_ == project_->layout.placement(*selected_).offset_x &&
+         alignment_offset_y_ == project_->layout.placement(*selected_).offset_y)) {
+        return;
+    }
+    auto request = make_request(chunkmap::CommandType::ChunkShiftApply);
+    request.payload = chunkmap::ChunkAlignmentPayload{
+        *selected_, alignment_offset_x_, alignment_offset_y_, false};
+    pending_alignment_apply_request_id_ = request.request_id;
+    command_host_.submit(std::move(request));
+    status_message_ = "Saving chunk placement...";
+    error_message_.clear();
+}
+
 void App::export_full_map() {
     if (!project_ || pending_export_request_id_) return;
     flush_prompt();
@@ -1348,6 +1594,314 @@ void App::refresh_seam() {
     }
 }
 
+void App::rebuild_seam_textures(
+    std::optional<chunkmap::ChunkCoord> placement_preview,
+    chunkmap::ChunkPlacement preview_value) {
+    if (!placement_preview) {
+        seam_textures_.clear();
+        seam_preview_sources_.clear();
+    }
+    if (!project_ || !project_->config.has_chunk_size()) return;
+    std::unordered_map<chunkmap::ChunkCoord, chunkmap::ImageBuffer,
+                       chunkmap::ChunkCoordHash> full_rebuild_sources;
+    auto load_source = [&](chunkmap::ChunkCoord coord) -> const chunkmap::ImageBuffer* {
+        auto& cache = placement_preview ? seam_preview_sources_ : full_rebuild_sources;
+        const auto found = cache.find(coord);
+        if (found != cache.end()) return &found->second;
+        auto loaded = chunkmap::ImageBuffer::load(project_->paths.chunk_image(coord));
+        if (!loaded) return nullptr;
+        const auto inserted = cache.emplace(coord, loaded.take_value());
+        return &inserted.first->second;
+    };
+    for (const auto direction : {chunkmap::SeamDirection::Right,
+                                 chunkmap::SeamDirection::Bottom}) {
+        for (int y = 0; y < project_->config.rows; ++y) {
+            for (int x = 0; x < project_->config.columns; ++x) {
+                const chunkmap::SeamKey key{{x, y}, direction};
+                const auto second = chunkmap::seam_second(key);
+                if (placement_preview && key.first != *placement_preview &&
+                    second != *placement_preview) continue;
+                if (!project_->config.contains(second) || !chunk_ready(key.first) ||
+                    !chunk_ready(second)) continue;
+                const auto* first_image = load_source(key.first);
+                const auto* second_image = load_source(second);
+                if (!first_image || !second_image) continue;
+                const auto found = project_->layout.seams.find(key);
+                const auto seam = found == project_->layout.seams.end()
+                    ? chunkmap::LayoutRenderer::default_seam(project_->config, key)
+                    : found->second;
+                const auto placement = [&](chunkmap::ChunkCoord coord) {
+                    return placement_preview && *placement_preview == coord
+                        ? preview_value : project_->layout.placement(coord);
+                };
+                auto patch = chunkmap::LayoutRenderer::render_seam_patch(
+                    *first_image, *second_image, project_->config,
+                    placement(key.first), placement(second), seam);
+                if (!patch) continue;
+                auto texture = std::make_unique<GlTexture>();
+                if (texture->load(patch.value())) {
+                    seam_textures_[key] = std::move(texture);
+                }
+            }
+        }
+    }
+}
+
+void App::open_seam_editor() {
+    if (!project_ || !seam_analysis_) return;
+    const chunkmap::SeamKey key{seam_first_, seam_core_direction_};
+    const auto found = project_->layout.seams.find(key);
+    seam_editor_value_ = found == project_->layout.seams.end()
+        ? chunkmap::LayoutRenderer::default_seam(project_->config, key)
+        : found->second;
+    seam_editor_active_point_ = -1;
+    seam_editor_dirty_ = false;
+    show_seam_editor_ = true;
+    auto first_image = chunkmap::ImageBuffer::load(project_->paths.chunk_image(key.first));
+    auto second_image = chunkmap::ImageBuffer::load(
+        project_->paths.chunk_image(chunkmap::seam_second(key)));
+    if (!first_image || !second_image) {
+        show_seam_editor_ = false;
+        error_message_ = !first_image ? first_image.error().message : second_image.error().message;
+        return;
+    }
+    seam_editor_first_image_ = first_image.take_value();
+    seam_editor_second_image_ = second_image.take_value();
+    refresh_seam_editor_preview();
+}
+
+void App::refresh_seam_editor_preview() {
+    if (!project_ || !show_seam_editor_) return;
+    const auto key = seam_editor_value_.key;
+    const auto second = chunkmap::seam_second(key);
+    if (!seam_editor_first_image_ || !seam_editor_second_image_) return;
+    auto patch = chunkmap::LayoutRenderer::render_seam_patch(
+        *seam_editor_first_image_, *seam_editor_second_image_, project_->config,
+        project_->layout.placement(key.first), project_->layout.placement(second),
+        seam_editor_value_);
+    if (!patch) {
+        error_message_ = patch.error().message;
+        return;
+    }
+    seam_editor_texture_.load(patch.value());
+    auto live_texture = std::make_unique<GlTexture>();
+    if (live_texture->load(patch.value())) {
+        seam_textures_[key] = std::move(live_texture);
+    }
+}
+
+void App::draw_seam_editor() {
+    if (!project_) {
+        show_seam_editor_ = false;
+        return;
+    }
+    bool open = show_seam_editor_;
+    ImGui::SetNextWindowSize(ImVec2(760.0F, 620.0F), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Seam Editor", &open)) {
+        ImGui::End();
+        if (!open) {
+            show_seam_editor_ = false;
+            rebuild_seam_textures(
+                seam_editor_value_.key.first,
+                project_->layout.placement(seam_editor_value_.key.first));
+        }
+        return;
+    }
+    const auto key = seam_editor_value_.key;
+    const auto second = chunkmap::seam_second(key);
+    ImGui::Text("%s  ->  %s", coord_label(key.first).c_str(), coord_label(second).c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s overlap only", chunkmap::seam_direction_name(key.direction));
+    ImGui::TextDisabled(
+        "Drag points. Click the band to add a point; right-click an inner point to remove it.");
+
+    auto geometry = chunkmap::image_geometry(project_->config);
+    const int overlap = geometry
+        ? (key.direction == chunkmap::SeamDirection::Right
+               ? geometry.value().overlap_x : geometry.value().overlap_y)
+        : 0;
+    int feather = seam_editor_value_.feather_width;
+    ImGui::SetNextItemWidth(240.0F);
+    if (ImGui::SliderInt("Feather width", &feather, 0, std::max(0, overlap), "%d px")) {
+        seam_editor_value_.feather_width = feather;
+        seam_editor_dirty_ = true;
+        refresh_seam_editor_preview();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Auto Boundary")) {
+        seam_editor_value_ = chunkmap::LayoutRenderer::default_seam(project_->config, key);
+        seam_editor_dirty_ = true;
+        refresh_seam_editor_preview();
+    }
+
+    const ImVec2 available = ImGui::GetContentRegionAvail();
+    const float source_width = static_cast<float>(std::max(1, seam_editor_texture_.width()));
+    const float source_height = static_cast<float>(std::max(1, seam_editor_texture_.height()));
+    const float scale = std::min(
+        std::max(1.0F, available.x) / source_width,
+        std::max(180.0F, available.y - 64.0F) / source_height);
+    const ImVec2 canvas_size(
+        std::max(120.0F, source_width * scale),
+        std::max(120.0F, source_height * scale));
+    ImGui::InvisibleButton("##seam_edit_canvas", canvas_size,
+                           ImGuiButtonFlags_MouseButtonLeft |
+                           ImGuiButtonFlags_MouseButtonRight);
+    const ImVec2 canvas_min = ImGui::GetItemRectMin();
+    const ImVec2 canvas_max = ImGui::GetItemRectMax();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(canvas_min, canvas_max, IM_COL32(18, 20, 23, 255));
+    if (seam_editor_texture_.id() != 0) {
+        draw->AddImage(texture_id(seam_editor_texture_), canvas_min, canvas_max);
+    }
+    const bool right = key.direction == chunkmap::SeamDirection::Right;
+    const auto point_position = [&](const chunkmap::SeamPoint& point) {
+        return right
+            ? ImVec2(canvas_min.x + static_cast<float>(point.across) * canvas_size.x,
+                     canvas_min.y + static_cast<float>(point.along) * canvas_size.y)
+            : ImVec2(canvas_min.x + static_cast<float>(point.along) * canvas_size.x,
+                     canvas_min.y + static_cast<float>(point.across) * canvas_size.y);
+    };
+    const ImU32 boundary_color = IM_COL32(247, 184, 69, 255);
+    for (std::size_t index = 1; index < seam_editor_value_.points.size(); ++index) {
+        draw->AddLine(point_position(seam_editor_value_.points[index - 1]),
+                      point_position(seam_editor_value_.points[index]),
+                      boundary_color, 2.5F);
+    }
+    for (const auto& point : seam_editor_value_.points) {
+        draw->AddCircleFilled(point_position(point), 5.5F, boundary_color);
+        draw->AddCircle(point_position(point), 7.5F, IM_COL32(20, 22, 25, 230), 0, 2.0F);
+    }
+
+    const auto normalized_mouse = [&]() {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const double horizontal = std::clamp(
+            static_cast<double>((mouse.x - canvas_min.x) / canvas_size.x), 0.0, 1.0);
+        const double vertical = std::clamp(
+            static_cast<double>((mouse.y - canvas_min.y) / canvas_size.y), 0.0, 1.0);
+        return right ? chunkmap::SeamPoint{vertical, horizontal}
+                     : chunkmap::SeamPoint{horizontal, vertical};
+    };
+    const auto nearest_point = [&]() {
+        int result = -1;
+        float distance_squared = 13.0F * 13.0F;
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        for (std::size_t index = 0; index < seam_editor_value_.points.size(); ++index) {
+            const ImVec2 position = point_position(seam_editor_value_.points[index]);
+            const float dx = mouse.x - position.x;
+            const float dy = mouse.y - position.y;
+            const float candidate = dx * dx + dy * dy;
+            if (candidate <= distance_squared) {
+                result = static_cast<int>(index);
+                distance_squared = candidate;
+            }
+        }
+        return result;
+    };
+    const bool hovered = ImGui::IsItemHovered();
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        const int nearest = nearest_point();
+        if (nearest > 0 && nearest + 1 < static_cast<int>(seam_editor_value_.points.size())) {
+            seam_editor_value_.points.erase(seam_editor_value_.points.begin() + nearest);
+            seam_editor_dirty_ = true;
+            refresh_seam_editor_preview();
+        }
+    }
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        seam_editor_active_point_ = nearest_point();
+        if (seam_editor_active_point_ < 0) {
+            auto point = normalized_mouse();
+            point.along = std::clamp(point.along, 0.001, 0.999);
+            const auto insertion = std::lower_bound(
+                seam_editor_value_.points.begin(), seam_editor_value_.points.end(), point.along,
+                [](const auto& candidate, double along) { return candidate.along < along; });
+            const auto too_close = [&](const auto& candidate) {
+                return std::abs(candidate.along - point.along) < 0.0005;
+            };
+            if ((insertion != seam_editor_value_.points.end() && too_close(*insertion)) ||
+                (insertion != seam_editor_value_.points.begin() && too_close(*(insertion - 1)))) {
+                seam_editor_active_point_ = static_cast<int>(
+                    insertion != seam_editor_value_.points.end() && too_close(*insertion)
+                        ? std::distance(seam_editor_value_.points.begin(), insertion)
+                        : std::distance(seam_editor_value_.points.begin(), insertion - 1));
+            } else {
+                seam_editor_active_point_ = static_cast<int>(
+                    std::distance(seam_editor_value_.points.begin(), insertion));
+                seam_editor_value_.points.insert(insertion, point);
+                seam_editor_dirty_ = true;
+                refresh_seam_editor_preview();
+            }
+        }
+    }
+    if (seam_editor_active_point_ >= 0 && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        auto point = normalized_mouse();
+        const int index = seam_editor_active_point_;
+        if (index == 0) point.along = 0.0;
+        else if (index + 1 == static_cast<int>(seam_editor_value_.points.size())) point.along = 1.0;
+        else {
+            const double lower =
+                seam_editor_value_.points[static_cast<std::size_t>(index - 1)].along + 0.0005;
+            const double upper =
+                seam_editor_value_.points[static_cast<std::size_t>(index + 1)].along - 0.0005;
+            point.along = lower <= upper
+                ? std::clamp(point.along, lower, upper)
+                : seam_editor_value_.points[static_cast<std::size_t>(index)].along;
+        }
+        const auto previous = seam_editor_value_.points[static_cast<std::size_t>(index)];
+        if (previous.along != point.along || previous.across != point.across) {
+            seam_editor_value_.points[static_cast<std::size_t>(index)] = point;
+            seam_editor_dirty_ = true;
+            refresh_seam_editor_preview();
+        }
+    }
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) seam_editor_active_point_ = -1;
+
+    ImGui::Spacing();
+    if (ImGui::Button("Save Seam")) {
+        auto request = make_request(chunkmap::CommandType::SeamSet);
+        request.payload = chunkmap::SeamSetPayload{seam_editor_value_};
+        auto saved = command_host_.submit_and_wait(std::move(request));
+        if (saved) {
+            project_->layout.seams[key] = seam_editor_value_;
+            show_seam_editor_ = false;
+            seam_editor_dirty_ = false;
+            status_message_ = "Seam parameters saved";
+            error_message_.clear();
+        } else {
+            error_message_ = saved.error().message;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Use Auto Default")) {
+        auto request = make_request(chunkmap::CommandType::SeamReset);
+        request.payload = chunkmap::SeamResetPayload{key};
+        auto reset = command_host_.submit_and_wait(std::move(request));
+        if (reset) {
+            project_->layout.seams.erase(key);
+            seam_editor_value_ = chunkmap::LayoutRenderer::default_seam(
+                project_->config, key);
+            seam_editor_dirty_ = false;
+            refresh_seam_editor_preview();
+            status_message_ = "Using automatic seam default";
+            error_message_.clear();
+        } else {
+            error_message_ = reset.error().message;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+        show_seam_editor_ = false;
+        seam_editor_dirty_ = false;
+        rebuild_seam_textures(key.first, project_->layout.placement(key.first));
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("Chunk PNG files are never modified.");
+    ImGui::End();
+    if (!open) {
+        show_seam_editor_ = false;
+        rebuild_seam_textures(key.first, project_->layout.placement(key.first));
+    }
+}
+
 chunkmap::CommandRequest App::make_request(chunkmap::CommandType type) const {
     chunkmap::CommandRequest request;
     request.request_id = next_desktop_request_id();
@@ -1401,6 +1955,20 @@ void App::poll_commands() {
         if (!completion.result) {
             log_detail << " | " << completion.result.error().code << ": "
                        << completion.result.error().message;
+        } else if (completion.result.value().data.contains("registration")) {
+            const auto& registration =
+                completion.result.value().data.at("registration");
+            const auto offset = registration.value("offset", nlohmann::json::array());
+            if (offset.is_array() && offset.size() == 2U) {
+                log_detail << " | registration "
+                           << offset.at(0).get<int>() << ','
+                           << offset.at(1).get<int>() << " ("
+                           << std::setprecision(1)
+                           << registration.value("relative_improvement", 0.0) * 100.0
+                           << "% better, "
+                           << (registration.value("applied", false) ? "applied" : "unchanged")
+                           << ')';
+            }
         }
         append_log(from_desktop ? "Desktop" : "CLI",
                    chunkmap::command_name(completion.request.type),
@@ -1411,14 +1979,21 @@ void App::poll_commands() {
             completion.request.request_id == *pending_import_request_id_;
         const bool pending_remove = pending_remove_request_id_ &&
             completion.request.request_id == *pending_remove_request_id_;
+        const bool pending_alignment_preview = pending_alignment_preview_request_id_ &&
+            completion.request.request_id == *pending_alignment_preview_request_id_;
+        const bool pending_alignment_apply = pending_alignment_apply_request_id_ &&
+            completion.request.request_id == *pending_alignment_apply_request_id_;
         const bool pending_export = pending_export_request_id_ &&
             completion.request.request_id == *pending_export_request_id_;
         const bool pending_concept_export = pending_concept_export_request_id_ &&
             completion.request.request_id == *pending_concept_export_request_id_;
-        if (from_desktop && !pending_import && !pending_remove && !pending_export &&
-            !pending_concept_export) continue;
+        if (from_desktop && !pending_import && !pending_remove &&
+            !pending_alignment_preview && !pending_alignment_apply &&
+            !pending_export && !pending_concept_export) continue;
         if (pending_import) pending_import_request_id_.reset();
         if (pending_remove) pending_remove_request_id_.reset();
+        if (pending_alignment_preview) pending_alignment_preview_request_id_.reset();
+        if (pending_alignment_apply) pending_alignment_apply_request_id_.reset();
         if (pending_export) pending_export_request_id_.reset();
         if (pending_concept_export) pending_concept_export_request_id_.reset();
         if (!completion.result) {
@@ -1426,6 +2001,76 @@ void App::poll_commands() {
             continue;
         }
         auto& result = completion.result.value();
+        if (pending_alignment_preview) {
+            const auto chunk = result.data.value("chunk", nlohmann::json::array());
+            if (!selected_ || !chunk.is_array() || chunk.size() != 2U ||
+                selected_->x != chunk.at(0).get<int>() ||
+                selected_->y != chunk.at(1).get<int>() ||
+                !result.alignment_preview_image) {
+                continue;
+            }
+            auto uploaded = alignment_preview_texture_.load(
+                *result.alignment_preview_image);
+            if (!uploaded) {
+                error_message_ = uploaded.error().message;
+                continue;
+            }
+            alignment_preview_coord_ = *selected_;
+            const auto registration = result.data.value(
+                "registration", nlohmann::json::object());
+            const auto offset = registration.value("offset", nlohmann::json::array());
+            if (offset.is_array() && offset.size() == 2U) {
+                alignment_offset_x_ = offset.at(0).get<int>();
+                alignment_offset_y_ = offset.at(1).get<int>();
+                rebuild_seam_textures(
+                    *selected_, {alignment_offset_x_, alignment_offset_y_});
+            }
+            const auto* payload = std::get_if<chunkmap::ChunkAlignmentPayload>(
+                &completion.request.payload);
+            if (payload && payload->automatic) {
+                const auto comparison = registration.value(
+                    "comparison", nlohmann::json::object());
+                const auto candidates = comparison.value(
+                    "candidates", nlohmann::json::object());
+                if (candidates.contains("low_resolution_2d") &&
+                    candidates.contains("projection")) {
+                    const auto parse_candidate = [](const nlohmann::json& value) {
+                        AlignmentCandidateSummary candidate;
+                        const auto candidate_offset = value.value(
+                            "offset", nlohmann::json::array());
+                        if (candidate_offset.is_array() && candidate_offset.size() == 2U) {
+                            candidate.offset_x = candidate_offset.at(0).get<int>();
+                            candidate.offset_y = candidate_offset.at(1).get<int>();
+                        }
+                        candidate.score = value.value("score", 0.0);
+                        candidate.relative_improvement = value.value(
+                            "relative_improvement", 0.0);
+                        candidate.accepted = value.value("accepted", false);
+                        return candidate;
+                    };
+                    AlignmentComparisonSummary summary;
+                    summary.low_resolution = parse_candidate(
+                        candidates.at("low_resolution_2d"));
+                    summary.projection = parse_candidate(candidates.at("projection"));
+                    summary.selected_method = comparison.value(
+                        "selected_method", std::string("low_resolution_2d"));
+                    summary.selected_offset_x = alignment_offset_x_;
+                    summary.selected_offset_y = alignment_offset_y_;
+                    alignment_comparison_ = std::move(summary);
+                    alignment_result_choice_ = 0;
+                }
+            }
+            if (payload && payload->automatic && alignment_offset_x_ == 0 &&
+                alignment_offset_y_ == 0) {
+                status_message_ = "Auto found no confident alignment shift";
+            } else {
+                status_message_ = "Alignment preview: X " +
+                    std::to_string(alignment_offset_x_) + ", Y " +
+                    std::to_string(alignment_offset_y_);
+            }
+            error_message_.clear();
+            continue;
+        }
         if (pending_export) {
             const auto path = result.data.value("output", std::string{});
             if (!path.empty()) last_export_path_ = std::filesystem::path(path);
@@ -1475,10 +2120,17 @@ void App::poll_commands() {
                 textures_.invalidate(path);
             }
         }
+        if (alignment_preview_coord_ &&
+            std::find(result.changes.changed_chunks.begin(),
+                      result.changes.changed_chunks.end(), *alignment_preview_coord_) !=
+                result.changes.changed_chunks.end()) {
+            reset_alignment_preview();
+        }
         if (!result.changes.changed_chunks.empty()) {
             seam_analysis_.reset();
             seam_overlap_texture_.reset();
             seam_difference_texture_.reset();
+            rebuild_seam_textures();
         }
         if (selected_ && std::find(result.changes.changed_prompts.begin(),
                                    result.changes.changed_prompts.end(), *selected_) !=
@@ -1498,6 +2150,15 @@ void App::poll_commands() {
                 : "Chunk image imported";
         } else if (pending_remove) {
             status_message_ = "Chunk image deleted";
+        } else if (pending_alignment_apply) {
+            const auto registration = result.data.value(
+                "registration", nlohmann::json::object());
+            const auto offset = registration.value("offset", nlohmann::json::array());
+            status_message_ = offset.is_array() && offset.size() == 2U
+                ? "Saved chunk placement: X " +
+                      std::to_string(offset.at(0).get<int>()) + ", Y " +
+                      std::to_string(offset.at(1).get<int>())
+                : "Saved chunk placement";
         } else {
             status_message_ = "CLI command applied";
         }

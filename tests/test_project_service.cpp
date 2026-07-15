@@ -6,7 +6,10 @@
 #include <doctest/doctest.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 
@@ -82,7 +85,7 @@ TEST_CASE("project creation persists only minimal formal inputs") {
     REQUIRE(project_json.ok());
     const auto config = nlohmann::json::parse(project_json.value());
     CHECK(config.size() == 5);
-    CHECK(config.at("schema_version") == 2);
+    CHECK(config.at("schema_version") == 3);
     CHECK_FALSE(config.contains("name"));
     CHECK_FALSE(config.contains("concept_file"));
     CHECK_FALSE(config.contains("feather_ratio"));
@@ -180,7 +183,7 @@ TEST_CASE("schema v1 migration keeps formal content and removes derived files") 
     chunkmap::ProjectService service(workspace.path);
     auto migrated = service.open_project("legacy-world");
     REQUIRE(migrated.ok());
-    CHECK(migrated.value().config.schema_version == 2);
+    CHECK(migrated.value().config.schema_version == 3);
     CHECK(std::filesystem::is_regular_file(root / "concept.png"));
     CHECK(std::filesystem::is_regular_file(root / "chunks/0_0.png"));
     CHECK(std::filesystem::is_regular_file(root / "prompts/0_0.md"));
@@ -190,6 +193,28 @@ TEST_CASE("schema v1 migration keeps formal content and removes derived files") 
     CHECK_FALSE(std::filesystem::exists(root / "cache"));
     CHECK_FALSE(std::filesystem::exists(root / "chunks/0_0"));
     CHECK_FALSE(std::filesystem::exists(root / "prompts/1_0.md"));
+}
+
+TEST_CASE("schema v2 migration changes only project metadata") {
+    TempWorkspace workspace;
+    chunkmap::ProjectService service(workspace.path);
+    auto project = create_project(workspace, service);
+    const auto source = workspace.make_image("v2-source.png", 16, 12);
+    REQUIRE(service.import_chunk_image(project, {0, 0}, source));
+    const auto chunk_path = project.paths.chunk_image({0, 0});
+    const auto before = chunkmap::atomic_file::read_binary(chunk_path);
+    REQUIRE(before);
+    auto project_json = chunkmap::atomic_file::read_text(project.paths.project_json());
+    REQUIRE(project_json);
+    auto parsed = nlohmann::json::parse(project_json.value());
+    parsed["schema_version"] = 2;
+    REQUIRE(chunkmap::atomic_file::write_text(
+        project.paths.project_json(), parsed.dump(2) + '\n'));
+
+    auto migrated = service.open_project(project.config.name);
+    REQUIRE(migrated);
+    CHECK(migrated.value().config.schema_version == 3);
+    CHECK(chunkmap::atomic_file::read_binary(chunk_path).value() == before.value());
 }
 
 TEST_CASE("legacy project without global prompt treats it as empty") {
@@ -235,7 +260,7 @@ TEST_CASE("first imported image determines chunk size and survives reload") {
     CHECK(service.validate(reopened.value()).ok());
 }
 
-TEST_CASE("multiple imported images share normalization without requiring neighbors") {
+TEST_CASE("multiple imported images require exact dimensions without requiring neighbors") {
     TempWorkspace workspace;
     chunkmap::ProjectService service(workspace.path);
     auto project = create_project(workspace, service);
@@ -249,17 +274,126 @@ TEST_CASE("multiple imported images share normalization without requiring neighb
 
     const auto one_pixel_short = workspace.make_image("short.png", 8, 7);
     auto normalized = service.import_chunk_image(project, {1, 1}, one_pixel_short);
-    REQUIRE(normalized.ok());
-    CHECK(normalized.value().added_left + normalized.value().added_right == 1);
-    auto normalized_image = chunkmap::ImageBuffer::load(project.paths.chunk_image({1, 1}));
-    REQUIRE(normalized_image.ok());
-    CHECK(normalized_image.value().width() == 9);
+    REQUIRE_FALSE(normalized.ok());
+    CHECK(normalized.error().code == "chunk_size_mismatch");
+    CHECK_FALSE(std::filesystem::exists(project.paths.chunk_image({1, 1})));
 
     const auto wrong_size = workspace.make_image("wrong.png", 7, 7);
     auto rejected = service.import_chunk_image(project, {2, 0}, wrong_size);
     REQUIRE_FALSE(rejected.ok());
     CHECK(rejected.error().code == "chunk_size_mismatch");
     CHECK_FALSE(std::filesystem::exists(project.paths.chunk_image({2, 0})));
+}
+
+TEST_CASE("chunk import preserves user pixels even beside a Ready neighbor") {
+    TempWorkspace workspace;
+    chunkmap::ProjectService service(workspace.path);
+    auto project = create_project(workspace, service);
+    const auto neighbor = workspace.make_image("neighbor.png", 20, 20);
+    REQUIRE(service.import_chunk_image(project, {0, 0}, neighbor).ok());
+
+    chunkmap::ImageBuffer imported_image(20, 20);
+    for (int y = 0; y < imported_image.height(); ++y) {
+        for (int x = 0; x < imported_image.width(); ++x) {
+            auto* pixel = imported_image.pixel(x, y);
+            pixel[0] = 210U;
+            pixel[1] = 30U;
+            pixel[2] = 40U;
+            pixel[3] = 255U;
+        }
+    }
+    const auto imported_path = workspace.path / "user-import.png";
+    REQUIRE(imported_image.save_png(imported_path).ok());
+    REQUIRE(service.import_chunk_image(project, {1, 0}, imported_path).ok());
+    auto official = chunkmap::ImageBuffer::load(project.paths.chunk_image({1, 0}));
+    REQUIRE(official);
+    CHECK(official.value().pixel(0, 10)[0] == 210U);
+    CHECK(official.value().pixel(0, 10)[1] == 30U);
+}
+
+TEST_CASE("alignment placement persists without changing formal PNG bytes") {
+    TempWorkspace workspace;
+    chunkmap::ProjectService service(workspace.path);
+    auto project = create_project(workspace, service);
+    const auto neighbor_path = workspace.make_image("neighbor.png", 30, 30);
+    REQUIRE(service.import_chunk_image(project, {0, 0}, neighbor_path).ok());
+
+    chunkmap::ImageBuffer source(30, 30);
+    for (int y = 0; y < source.height(); ++y) {
+        for (int x = 0; x < source.width(); ++x) {
+            auto* pixel = source.pixel(x, y);
+            pixel[0] = static_cast<std::uint8_t>((x * 7 + y * 3) % 256);
+            pixel[1] = static_cast<std::uint8_t>((x * 2 + y * 11) % 256);
+            pixel[2] = static_cast<std::uint8_t>((x * 13 + y) % 256);
+            pixel[3] = 255U;
+        }
+    }
+    const auto source_path = workspace.path / "source.png";
+    REQUIRE(source.save_png(source_path).ok());
+    REQUIRE(service.import_chunk_image(project, {1, 0}, source_path).ok());
+    const auto official_path = project.paths.chunk_image({1, 0});
+    const auto before = chunkmap::atomic_file::read_binary(official_path);
+    REQUIRE(before);
+
+    chunkmap::NeighborImages neighbors;
+    auto neighbor = chunkmap::ImageBuffer::load(project.paths.chunk_image({0, 0}));
+    REQUIRE(neighbor);
+    neighbors.left = neighbor.take_value();
+    auto preview = service.preview_chunk_alignment(
+        project, {1, 0}, source, neighbors, false, 2, -1);
+    REQUIRE(preview);
+    CHECK(preview.value().registration.offset_x == 2);
+    CHECK(preview.value().registration.offset_y == -1);
+    auto after_preview = chunkmap::atomic_file::read_binary(official_path);
+    REQUIRE(after_preview);
+    CHECK(after_preview.value() == before.value());
+
+    auto applied = service.apply_chunk_shift(
+        project, {1, 0}, 2, -1);
+    REQUIRE(applied);
+    auto after_apply = chunkmap::atomic_file::read_binary(official_path);
+    REQUIRE(after_apply);
+    CHECK(after_apply.value() == before.value());
+    CHECK(project.layout.placement({1, 0}).offset_x == 2);
+    CHECK(project.layout.placement({1, 0}).offset_y == -1);
+    auto reopened = service.open_project(project.config.name);
+    REQUIRE(reopened);
+    CHECK(reopened.value().layout.placement({1, 0}).offset_x == 2);
+    CHECK(reopened.value().layout.placement({1, 0}).offset_y == -1);
+}
+
+TEST_CASE("seam parameters persist independently and never rewrite chunk PNGs") {
+    TempWorkspace workspace;
+    chunkmap::ProjectService service(workspace.path);
+    auto project = create_project(workspace, service);
+    const auto first = workspace.make_image("seam-first.png", 20, 20);
+    const auto second = workspace.make_image("seam-second.png", 20, 20);
+    REQUIRE(service.import_chunk_image(project, {0, 0}, first));
+    REQUIRE(service.import_chunk_image(project, {1, 0}, second));
+    const auto first_before = chunkmap::atomic_file::read_binary(
+        project.paths.chunk_image({0, 0}));
+    const auto second_before = chunkmap::atomic_file::read_binary(
+        project.paths.chunk_image({1, 0}));
+    REQUIRE(first_before);
+    REQUIRE(second_before);
+
+    chunkmap::SeamDefinition seam;
+    seam.key = {{0, 0}, chunkmap::SeamDirection::Right};
+    seam.feather_width = 2;
+    seam.points = {{0.0, 0.35}, {0.5, 0.7}, {1.0, 0.45}};
+    REQUIRE(service.set_seam(project, seam));
+    CHECK(std::filesystem::is_regular_file(project.paths.seam_file(seam.key)));
+    CHECK(chunkmap::atomic_file::read_binary(project.paths.chunk_image({0, 0})).value() ==
+          first_before.value());
+    CHECK(chunkmap::atomic_file::read_binary(project.paths.chunk_image({1, 0})).value() ==
+          second_before.value());
+
+    auto reopened = service.open_project(project.config.name);
+    REQUIRE(reopened);
+    REQUIRE(reopened.value().layout.seams.count(seam.key) == 1U);
+    CHECK(reopened.value().layout.seams.at(seam.key).points.size() == 3U);
+    REQUIRE(service.reset_seam(project, seam.key));
+    CHECK_FALSE(std::filesystem::exists(project.paths.seam_file(seam.key)));
 }
 
 TEST_CASE("prompt import overwrites listed chunks and preserves others") {
@@ -354,12 +488,13 @@ TEST_CASE("concept context exports regions schema and manifest") {
     CHECK(manifest.value().find("prompts import") != std::string::npos);
     auto guide = chunkmap::atomic_file::read_text(context.value().authoring_guide);
     REQUIRE(guide.ok());
-    CHECK(guide.value().find("Specification version: 2") != std::string::npos);
+    CHECK(guide.value().find("Specification version: 3") != std::string::npos);
     CHECK(guide.value().find("Preserve model freedom") != std::string::npos);
     CHECK(guide.value().find("Interpret Concept symbols semantically") != std::string::npos);
     CHECK(guide.value().find("gameplay-ready overworld tilemap") != std::string::npos);
     CHECK(guide.value().find("Generation-time Prompt discipline") != std::string::npos);
-    CHECK(guide.value().find("A Seam difference of `0.0`") != std::string::npos);
+    CHECK(guide.value().find("actual Desktop result also depends on placement") !=
+          std::string::npos);
 }
 
 TEST_CASE("concept slice export writes one external grid region") {
@@ -437,7 +572,7 @@ TEST_CASE("chunk context requires a Ready neighbor and excludes concept referenc
     CHECK(chunk_only.value() == "dense forest path");
 }
 
-TEST_CASE("chunk write overwrites only the formal image and protects neighbor overlap") {
+TEST_CASE("chunk write preserves the generated PNG without baking overlap pixels") {
     TempWorkspace workspace;
     chunkmap::ProjectService service(workspace.path);
     auto project = create_project(workspace, service);
@@ -456,12 +591,71 @@ TEST_CASE("chunk write overwrites only the formal image and protects neighbor ov
     auto official = chunkmap::ImageBuffer::load(project.paths.chunk_image({1, 1}));
     REQUIRE(official.ok());
     CHECK(official.value().rgba()[0] == 77);
-    CHECK(official.value().pixel(9, 5)[0] == 20);
+    CHECK(official.value().pixel(7, 5)[0] == 77);
+    CHECK(official.value().pixel(9, 5)[0] == 77);
+    CHECK(chunkmap::atomic_file::read_binary(project.paths.chunk_image({1, 1})).value() ==
+          chunkmap::atomic_file::read_binary(replacement_path).value());
     CHECK_FALSE(std::filesystem::exists(project.paths.root() / "cache"));
     CHECK_FALSE(std::filesystem::exists(project.paths.root() / "context"));
 }
 
-TEST_CASE("chunk write records deterministic 1px normalization") {
+TEST_CASE("chunk write records registration as placement and preserves generated bytes") {
+    TempWorkspace workspace;
+    chunkmap::ProjectService service(workspace.path);
+    auto project = create_project(workspace, service);
+    constexpr int width = 240;
+    constexpr int height = 160;
+    constexpr int shift = 8;
+    chunkmap::ImageBuffer target(width, height);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            auto* pixel = target.pixel(x, y);
+            const int cell = ((x / 7) + (y / 5) * 3) % 11;
+            pixel[0] = static_cast<std::uint8_t>((cell * 23 + x * 3) % 256);
+            pixel[1] = static_cast<std::uint8_t>((cell * 41 + y * 5) % 256);
+            pixel[2] = static_cast<std::uint8_t>((cell * 17 + x + y * 2) % 256);
+            pixel[3] = 255U;
+        }
+    }
+    chunkmap::ImageBuffer right(width, height);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            auto* pixel = right.pixel(x, y);
+            pixel[3] = 255U;
+        }
+    }
+    const int overlap = static_cast<int>(std::lround(width * 0.15));
+    REQUIRE(right.blit(target, {width - overlap, 0, overlap, height}, {0, 0}));
+    const auto right_path = workspace.path / "right-neighbor.png";
+    REQUIRE(right.save_png(right_path));
+    REQUIRE(service.import_chunk_image(project, {2, 1}, right_path));
+
+    chunkmap::ImageBuffer generated(width, height);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const int source_x = std::min(width - 1, x + shift);
+            std::copy_n(target.pixel(source_x, y), 4, generated.pixel(x, y));
+        }
+    }
+    const auto generated_path = workspace.path / "generated.png";
+    REQUIRE(generated.save_png(generated_path));
+    auto written = service.write_chunk_image(project, {1, 1}, generated_path);
+    REQUIRE(written);
+    CHECK(written.value().registration.applied);
+    CHECK(written.value().registration.offset_x >= shift - 1);
+    CHECK(written.value().registration.offset_x <= shift);
+    CHECK(written.value().registration.offset_y == 0);
+    CHECK(written.value().registration.score_after <
+          written.value().registration.score_before);
+    auto official = chunkmap::ImageBuffer::load(project.paths.chunk_image({1, 1}));
+    REQUIRE(official);
+    CHECK(chunkmap::atomic_file::read_binary(project.paths.chunk_image({1, 1})).value() ==
+          chunkmap::atomic_file::read_binary(generated_path).value());
+    CHECK(project.layout.placement({1, 1}).offset_x ==
+          written.value().registration.offset_x);
+}
+
+TEST_CASE("chunk write rejects dimensions that would require normalization") {
     TempWorkspace workspace;
     chunkmap::ProjectService service(workspace.path);
     auto project = create_project(workspace, service);
@@ -469,11 +663,9 @@ TEST_CASE("chunk write records deterministic 1px normalization") {
         project, {2, 1}, workspace.make_image("first.png", 10, 10)).ok());
     const auto short_image = workspace.make_image("short.png", 9, 10);
     auto written = service.write_chunk_image(project, {1, 1}, short_image);
-    REQUIRE(written.ok());
-    CHECK(written.value().added_left + written.value().added_right == 1);
-    auto official = chunkmap::ImageBuffer::load(project.paths.chunk_image({1, 1}));
-    REQUIRE(official.ok());
-    CHECK(official.value().width() == 10);
+    REQUIRE_FALSE(written.ok());
+    CHECK(written.error().code == "chunk_size_mismatch");
+    CHECK_FALSE(std::filesystem::exists(project.paths.chunk_image({1, 1})));
     CHECK_FALSE(std::filesystem::exists(project.paths.root() / "cache"));
 }
 

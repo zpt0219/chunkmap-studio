@@ -35,7 +35,9 @@ add_library(chunkmap_core STATIC
     core/version.cpp
     image/image_buffer.cpp
     image/full_map_exporter.cpp
+    image/layout_renderer.cpp
     image/image_pipeline.cpp
+    image/image_registration.cpp
     image/png_stream_writer.cpp
     image/seam_analyzer.cpp
     ipc/desktop_ipc.cpp

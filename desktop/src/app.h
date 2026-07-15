@@ -5,12 +5,15 @@
 #include "gl_texture.h"
 #include "map_zoom_state.h"
 #include "model/project.h"
+#include "image/layout_renderer.h"
 
 #include <imgui.h>
 
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace chunkmap_desktop {
@@ -34,6 +37,7 @@ private:
     void draw_chunk_tab();
     void draw_prompt_tab();
     void draw_seam_tab();
+    void draw_seam_editor();
     void draw_new_project_modal();
     void draw_project_settings_modal();
     void draw_change_grid_modal();
@@ -51,10 +55,19 @@ private:
     void focus_selected(const ImVec2& available);
     void import_image();
     void remove_selected_chunk();
+    void request_alignment_preview(bool automatic);
+    void reset_alignment_preview();
+    void apply_alignment_shift();
+    void preview_alignment_candidate();
     void export_full_map();
     void export_concept_slice();
     void export_generation_context();
     void refresh_seam();
+    void open_seam_editor();
+    void refresh_seam_editor_preview();
+    void rebuild_seam_textures(
+        std::optional<chunkmap::ChunkCoord> placement_preview = std::nullopt,
+        chunkmap::ChunkPlacement preview_value = {});
     void poll_commands();
     void append_log(std::string source,
                     std::string operation,
@@ -115,11 +128,45 @@ private:
     chunkmap::ChunkCoord seam_first_{};
     chunkmap::ChunkCoord seam_second_{};
     chunkmap::SeamDirection seam_core_direction_ = chunkmap::SeamDirection::Right;
+    std::unordered_map<chunkmap::SeamKey, std::unique_ptr<GlTexture>,
+                       chunkmap::SeamKeyHash> seam_textures_;
+    std::unordered_map<chunkmap::ChunkCoord, chunkmap::ImageBuffer,
+                       chunkmap::ChunkCoordHash> seam_preview_sources_;
+    bool show_seam_editor_ = false;
+    chunkmap::SeamDefinition seam_editor_value_;
+    std::optional<chunkmap::ImageBuffer> seam_editor_first_image_;
+    std::optional<chunkmap::ImageBuffer> seam_editor_second_image_;
+    GlTexture seam_editor_texture_;
+    int seam_editor_active_point_ = -1;
+    bool seam_editor_dirty_ = false;
+
+    int alignment_offset_x_ = 0;
+    int alignment_offset_y_ = 0;
+    std::optional<chunkmap::ChunkCoord> alignment_preview_coord_;
+    GlTexture alignment_preview_texture_;
+    struct AlignmentCandidateSummary {
+        int offset_x = 0;
+        int offset_y = 0;
+        double score = 0.0;
+        double relative_improvement = 0.0;
+        bool accepted = false;
+    };
+    struct AlignmentComparisonSummary {
+        AlignmentCandidateSummary low_resolution;
+        AlignmentCandidateSummary projection;
+        std::string selected_method;
+        int selected_offset_x = 0;
+        int selected_offset_y = 0;
+    };
+    std::optional<AlignmentComparisonSummary> alignment_comparison_;
+    int alignment_result_choice_ = 0;
 
     std::string status_message_;
     std::string error_message_;
     std::optional<std::string> pending_import_request_id_;
     std::optional<std::string> pending_remove_request_id_;
+    std::optional<std::string> pending_alignment_preview_request_id_;
+    std::optional<std::string> pending_alignment_apply_request_id_;
     std::optional<std::string> pending_export_request_id_;
     std::optional<std::string> pending_concept_export_request_id_;
     std::optional<std::filesystem::path> last_export_path_;

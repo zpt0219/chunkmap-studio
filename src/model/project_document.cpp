@@ -78,6 +78,28 @@ Result<const ImageBuffer*> ProjectDocument::image(ChunkCoord coord) const {
     return Result<const ImageBuffer*>::success(&*state.image);
 }
 
+ChunkPlacement ProjectDocument::placement(ChunkCoord coord) const {
+    return project_.layout.placement(coord);
+}
+
+const SeamDefinition* ProjectDocument::seam_override(SeamKey key) const {
+    const auto found = project_.layout.seams.find(key);
+    return found == project_.layout.seams.end() ? nullptr : &found->second;
+}
+
+void ProjectDocument::set_placement(ChunkCoord coord, ChunkPlacement placement) {
+    if (placement.is_zero()) project_.layout.placements.erase(coord);
+    else project_.layout.placements[coord] = placement;
+}
+
+void ProjectDocument::set_seam(SeamDefinition seam) {
+    project_.layout.seams[seam.key] = std::move(seam);
+}
+
+void ProjectDocument::reset_seam(SeamKey key) {
+    project_.layout.seams.erase(key);
+}
+
 void ProjectDocument::replace_image(ChunkCoord coord, ImageBuffer image) {
     auto& state = chunk(coord);
     state.ready = true;

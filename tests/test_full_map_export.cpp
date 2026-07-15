@@ -1,6 +1,7 @@
 #include "image/full_map_exporter.h"
 
 #include "image/image_buffer.h"
+#include "io/atomic_file.h"
 #include "model/project_document.h"
 #include "project/project_service.h"
 
@@ -70,7 +71,7 @@ void check_pixel(const chunkmap::ImageBuffer& image, int x, int y,
 
 }  // namespace
 
-TEST_CASE("full map export streams overlap ownership in desktop draw order") {
+TEST_CASE("full map export streams default seam patches in desktop draw order") {
     ExportWorkspace workspace;
     chunkmap::ProjectService service(workspace.path);
     auto project = create_export_project(workspace, service);
@@ -83,6 +84,10 @@ TEST_CASE("full map export streams overlap ownership in desktop draw order") {
         project, {0, 1}, workspace.make_image("blue.png", {0U, 0U, 255U, 255U})).ok());
     REQUIRE(service.import_chunk_image(
         project, {1, 1}, workspace.make_image("yellow.png", {255U, 255U, 0U, 255U})).ok());
+    const auto source_before = chunkmap::atomic_file::read_binary(
+        project.paths.chunk_image({1, 1}));
+    REQUIRE(source_before);
+    const auto source_path = project.paths.chunk_image({1, 1});
 
     auto document = chunkmap::ProjectDocument::load(std::move(project));
     REQUIRE(document.ok());
@@ -111,10 +116,11 @@ TEST_CASE("full map export streams overlap ownership in desktop draw order") {
     CHECK(image.value().width() == 7);
     CHECK(image.value().height() == 7);
     check_pixel(image.value(), 0, 0, {255U, 0U, 0U, 255U});
-    check_pixel(image.value(), 3, 0, {0U, 255U, 0U, 255U});
-    check_pixel(image.value(), 0, 3, {0U, 0U, 255U, 255U});
-    check_pixel(image.value(), 3, 3, {255U, 255U, 0U, 255U});
+    check_pixel(image.value(), 3, 0, {128U, 128U, 0U, 255U});
+    check_pixel(image.value(), 0, 3, {128U, 0U, 128U, 255U});
+    check_pixel(image.value(), 3, 3, {128U, 255U, 0U, 255U});
     check_pixel(image.value(), 6, 6, {255U, 255U, 0U, 255U});
+    CHECK(chunkmap::atomic_file::read_binary(source_path).value() == source_before.value());
 }
 
 TEST_CASE("full map export leaves missing chunks transparent") {

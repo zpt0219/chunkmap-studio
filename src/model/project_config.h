@@ -8,7 +8,7 @@
 namespace chunkmap {
 
 struct ProjectConfig {
-    int schema_version = 2;
+    int schema_version = 3;
     std::string name;
     int columns = 0;
     int rows = 0;

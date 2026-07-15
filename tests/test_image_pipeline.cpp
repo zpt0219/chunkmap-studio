@@ -118,36 +118,6 @@ TEST_CASE("template builder supports adjacent three and four sides with fixed co
     check_rgb(four.value(), 9, 9, {40, 0, 0});
 }
 
-TEST_CASE("normalizer selects the 1px padding edge that best matches a neighbor") {
-    auto settings = config();
-    chunkmap::ImageBuffer source(9, 10);
-    for (int y = 0; y < 10; ++y) {
-        for (int x = 0; x < 9; ++x) {
-            auto* pixel = source.pixel(x, y);
-            pixel[0] = static_cast<std::uint8_t>(x * 20);
-            pixel[3] = 255;
-        }
-    }
-    chunkmap::NeighborImages neighbors;
-    neighbors.left = solid(10, 10, {0, 0, 0, 255});
-    auto normalized = chunkmap::ImageNormalizer::normalize(
-        source, settings, {1, 1}, neighbors);
-    REQUIRE(normalized.ok());
-    CHECK(normalized.value().added_left == 1);
-    CHECK(normalized.value().added_right == 0);
-    CHECK(normalized.value().image.width() == 10);
-    CHECK(normalized.value().image.height() == 10);
-}
-
-TEST_CASE("normalizer rejects scaling and oversized images") {
-    auto settings = config();
-    chunkmap::NeighborImages neighbors;
-    CHECK_FALSE(chunkmap::ImageNormalizer::normalize(
-        solid(8, 10, {0, 0, 0, 255}), settings, {1, 1}, neighbors).ok());
-    CHECK_FALSE(chunkmap::ImageNormalizer::normalize(
-        solid(11, 10, {0, 0, 0, 255}), settings, {1, 1}, neighbors).ok());
-}
-
 TEST_CASE("seam analyzer reports RGB mean absolute error") {
     auto settings = config();
     auto first = solid(10, 10, {10, 20, 30, 255});

@@ -1,10 +1,12 @@
 #include "project/project_repository.h"
 
+#include "image/layout_renderer.h"
 #include "io/atomic_file.h"
 
 #include <nlohmann/json.hpp>
 
 #include <exception>
+#include <algorithm>
 
 namespace chunkmap {
 
@@ -100,7 +102,7 @@ Result<void> migrate_v1(const json& value, const ProjectPaths& paths) {
         }
 
         ProjectConfig config;
-        config.schema_version = 2;
+        config.schema_version = 3;
         config.name = paths.project_name();
         config.columns = columns;
         config.rows = rows;
@@ -131,6 +133,71 @@ Result<void> migrate_v1(const json& value, const ProjectPaths& paths) {
     }
 }
 
+Result<void> migrate_v2(json value, const ProjectPaths& paths) {
+    value["schema_version"] = 3;
+    return atomic_file::write_text(paths.project_json(), value.dump(2) + '\n');
+}
+
+Result<void> load_layout(Project& project) {
+    std::error_code error;
+    if (std::filesystem::is_regular_file(project.paths.placements_json(), error) && !error) {
+        auto content = atomic_file::read_text(project.paths.placements_json());
+        if (!content) return Result<void>::failure(content.error().code, content.error().message);
+        try {
+            const auto parsed = json::parse(content.value());
+            for (const auto& item : parsed.at("placements")) {
+                const ChunkCoord coord{item.at("x").get<int>(), item.at("y").get<int>()};
+                const auto& offset = item.at("offset");
+                if (!project.config.contains(coord) || !offset.is_array() || offset.size() != 2U) {
+                    return Result<void>::failure(
+                        "invalid_placements_json", "placements.json contains an invalid entry.");
+                }
+                ChunkPlacement placement{offset.at(0).get<int>(), offset.at(1).get<int>()};
+                if (!placement.is_zero()) project.layout.placements[coord] = placement;
+            }
+        } catch (const std::exception& exception) {
+            return Result<void>::failure(
+                "invalid_placements_json", std::string("Invalid placements.json: ") + exception.what());
+        }
+    }
+
+    error.clear();
+    if (!std::filesystem::is_directory(project.paths.seams_dir(), error) || error) {
+        return Result<void>::success();
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(project.paths.seams_dir(), error)) {
+        if (error) return Result<void>::failure("seam_read_failed", "Unable to read seams directory.");
+        if (!entry.is_regular_file() || entry.path().extension() != ".json") continue;
+        auto content = atomic_file::read_text(entry.path());
+        if (!content) return Result<void>::failure(content.error().code, content.error().message);
+        try {
+            const auto parsed = json::parse(content.value());
+            const auto& first = parsed.at("first");
+            SeamDefinition seam;
+            seam.key.first = {first.at(0).get<int>(), first.at(1).get<int>()};
+            const auto direction = parsed.at("direction").get<std::string>();
+            if (direction != "right" && direction != "bottom") {
+                return Result<void>::failure(
+                    "invalid_seam_json", "Seam direction must be right or bottom.");
+            }
+            seam.key.direction = direction == "right"
+                ? SeamDirection::Right : SeamDirection::Bottom;
+            seam.feather_width = parsed.at("feather_width").get<int>();
+            for (const auto& point : parsed.at("points")) {
+                seam.points.push_back({
+                    point.at("along").get<double>(), point.at("across").get<double>()});
+            }
+            auto valid = LayoutRenderer::validate_seam(project.config, seam);
+            if (!valid) return valid;
+            project.layout.seams[seam.key] = std::move(seam);
+        } catch (const std::exception& exception) {
+            return Result<void>::failure(
+                "invalid_seam_json", std::string("Invalid Seam JSON: ") + exception.what());
+        }
+    }
+    return Result<void>::success();
+}
+
 }  // namespace
 
 ProjectRepository::ProjectRepository(std::filesystem::path workspace_root)
@@ -155,10 +222,18 @@ Result<Project> ProjectRepository::load(const std::string& project_name) const {
             if (!migrated_content) return Result<Project>::failure(
                 migrated_content.error().code, migrated_content.error().message);
             parsed = nlohmann::json::parse(migrated_content.value());
+        } else if (parsed.at("schema_version").get<int>() == 2) {
+            auto migrated = migrate_v2(parsed, paths);
+            if (!migrated) return Result<Project>::failure(
+                migrated.error().code, migrated.error().message);
+            parsed["schema_version"] = 3;
         }
         auto config = decode_config(parsed, project_name);
         if (!config) return Result<Project>::failure(config.error().code, config.error().message);
-        return Result<Project>::success(Project{config.take_value(), std::move(paths)});
+        Project project{config.take_value(), std::move(paths), {}};
+        auto layout = load_layout(project);
+        if (!layout) return Result<Project>::failure(layout.error().code, layout.error().message);
+        return Result<Project>::success(std::move(project));
     } catch (const std::exception& exception) {
         return Result<Project>::failure(
             "invalid_project_json", std::string("Unable to parse project.json: ") + exception.what());
@@ -168,6 +243,60 @@ Result<Project> ProjectRepository::load(const std::string& project_name) const {
 Result<void> ProjectRepository::save(const Project& project) const {
     const std::string content = encode_config(project.config).dump(2) + '\n';
     return atomic_file::write_text(project.paths.project_json(), content);
+}
+
+Result<void> ProjectRepository::save_placements(const Project& project) const {
+    if (project.layout.placements.empty()) {
+        std::error_code error;
+        std::filesystem::remove(project.paths.placements_json(), error);
+        if (error) return Result<void>::failure(
+            "placement_remove_failed", "Unable to remove empty placements.json.");
+        return Result<void>::success();
+    }
+    std::vector<std::pair<ChunkCoord, ChunkPlacement>> entries;
+    entries.reserve(project.layout.placements.size());
+    for (const auto& entry : project.layout.placements) entries.push_back(entry);
+    std::sort(entries.begin(), entries.end(), [](const auto& first, const auto& second) {
+        if (first.first.y != second.first.y) return first.first.y < second.first.y;
+        return first.first.x < second.first.x;
+    });
+    json placements = json::array();
+    for (const auto& entry : entries) {
+        placements.push_back({
+            {"x", entry.first.x}, {"y", entry.first.y},
+            {"offset", {entry.second.offset_x, entry.second.offset_y}}});
+    }
+    return atomic_file::write_text(
+        project.paths.placements_json(),
+        json{{"schema_version", 1}, {"placements", placements}}.dump(2) + '\n');
+}
+
+Result<void> ProjectRepository::save_seam(const Project& project, SeamKey key) const {
+    const auto found = project.layout.seams.find(key);
+    if (found == project.layout.seams.end()) {
+        return Result<void>::failure("seam_missing", "Seam override is missing.");
+    }
+    auto valid = LayoutRenderer::validate_seam(project.config, found->second);
+    if (!valid) return valid;
+    json points = json::array();
+    for (const auto& point : found->second.points) {
+        points.push_back({{"along", point.along}, {"across", point.across}});
+    }
+    const json content = {
+        {"schema_version", 1},
+        {"first", {key.first.x, key.first.y}},
+        {"direction", seam_direction_name(key.direction)},
+        {"feather_width", found->second.feather_width},
+        {"points", points},
+    };
+    return atomic_file::write_text(project.paths.seam_file(key), content.dump(2) + '\n');
+}
+
+Result<void> ProjectRepository::remove_seam(const Project& project, SeamKey key) const {
+    std::error_code error;
+    std::filesystem::remove(project.paths.seam_file(key), error);
+    if (error) return Result<void>::failure("seam_remove_failed", "Unable to remove Seam override.");
+    return Result<void>::success();
 }
 
 }  // namespace chunkmap

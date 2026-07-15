@@ -32,6 +32,14 @@ std::filesystem::path ProjectPaths::global_prompt() const { return project_root_
 std::filesystem::path ProjectPaths::concept_source() const { return project_root_ / "concept.png"; }
 std::filesystem::path ProjectPaths::chunks_dir() const { return project_root_ / "chunks"; }
 std::filesystem::path ProjectPaths::prompts_dir() const { return project_root_ / "prompts"; }
+std::filesystem::path ProjectPaths::placements_json() const {
+    return project_root_ / "placements.json";
+}
+std::filesystem::path ProjectPaths::seams_dir() const { return project_root_ / "seams"; }
+std::filesystem::path ProjectPaths::seam_file(SeamKey key) const {
+    return seams_dir() /
+        (coord_name(key.first) + "_" + seam_direction_name(key.direction) + ".json");
+}
 std::filesystem::path ProjectPaths::chunk_prompt(ChunkCoord coord) const {
     return prompts_dir() / (coord_name(coord) + ".md");
 }

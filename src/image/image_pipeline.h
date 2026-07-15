@@ -27,14 +27,6 @@ struct NeighborImages {
     int count() const;
 };
 
-struct NormalizedImage {
-    ImageBuffer image;
-    int added_left = 0;
-    int added_top = 0;
-    int added_right = 0;
-    int added_bottom = 0;
-};
-
 Result<ImageGeometry> image_geometry(const ProjectConfig& config);
 
 class ConceptSlicer {
@@ -52,14 +44,6 @@ class TemplateBuilder {
 public:
     static Result<ImageBuffer> build(const ProjectConfig& config,
                                      const NeighborImages& neighbors);
-};
-
-class ImageNormalizer {
-public:
-    static Result<NormalizedImage> normalize(const ImageBuffer& source,
-                                             const ProjectConfig& config,
-                                             ChunkCoord coord,
-                                             const NeighborImages& neighbors);
 };
 
 }  // namespace chunkmap

@@ -57,8 +57,9 @@ is preserved:
 ```
 
 Import a user image into any chunk. The first imported image determines the
-project chunk size; later imports use the same validation and deterministic
-1px edge normalization as generated images:
+project chunk size; later imports and generated images must match it exactly.
+The PNG bytes are kept as the formal source and are never rewritten by alignment
+or seam editing:
 
 ```bash
 ./build/cli/chunkmap --project my-world \
@@ -200,12 +201,13 @@ alongside its template and mask.
 The same workflow can be used without Codex or the CLI. Select a chunk with at
 least one Ready orthogonal neighbor and use `Export Context` in the Chunk tab.
 The app writes `template.png`, `mask.png`, `prompt.txt`, and `manifest.json`,
-under `.chunkmap/handoff/<project>/`, then reveals the context folder. `mask.png` uses white for the area to generate
-and black for protected neighbor pixels. Generate in Stable Diffusion, ComfyUI,
+under `.chunkmap/handoff/<project>/`, then reveals the context folder. `mask.png` uses
+white for generation and black only for the outermost 1px neighbor anchor edge.
+Generate in Stable Diffusion, ComfyUI,
 or another external tool, then use the same `Import Image` or `Replace Image`
-action used for map anchors. The result goes through dimension checks,
-deterministic 1px normalization, protected-neighbor pixel restoration, and
-official image replacement.
+action used for map anchors. User imports remain byte-faithful after dimension
+validation. Alignment stores a non-destructive placement; Seam Editor stores an
+editable polyline boundary and feather width while previewing only the overlap band.
 
 Export the Concept Map and region crops for prompt planning:
 
@@ -226,12 +228,18 @@ neighbors, then write the generated image as the official chunk:
   chunk write 1,2 --image /path/to/generated.png --json
 ```
 
-`chunk write` validates dimensions, allows deterministic 1px edge padding,
-restores every protected overlap pixel from Ready neighbors, then overwrites
-the one formal chunk image. It does not build a Composite, metadata, or Seam
-cache.
+`chunk write` validates exact dimensions, copies the generated PNG as the formal
+source, and searches for a conservative whole-image translation against Ready
+neighbors. The chosen offset is stored as placement data instead of being baked
+into the PNG. Its JSON response reports transient registration diagnostics; it does
+not build a Composite or derived image cache.
 Generated writes require at least one Ready orthogonal neighbor. User imports
-do not, so several disconnected reference images can anchor the map style.
+do not and are never silently translated, so several disconnected reference
+images can anchor the map style. For any Ready Chunk, the Desktop Alignment
+controls provide Horizontal/Vertical preview, an `Auto` suggestion, `Reset`,
+and `Save Placement`; saving changes only placement parameters. Auto runs both a
+low-resolution 2D matcher and a row/column projection matcher, displays their
+offsets and confidence results, and lets the reviewer preview either result.
 
 Inspect a seam in memory:
 
@@ -240,7 +248,8 @@ Inspect a seam in memory:
   seam inspect 1,2 --direction right --json
 ```
 
-The Desktop draws Ready chunk textures directly with their configured overlap.
+The Desktop lays out original Ready chunk textures using their placements, then
+draws small right and bottom seam patches derived from editable seam parameters.
 The project deliberately has no Composite file and never exports automatically.
 Use File > Export Full Map in Desktop, or explicitly export a full-resolution
 RGBA PNG through the running Desktop host:
@@ -265,6 +274,8 @@ output/my-world/
   global_prompt.md       # only when non-empty
   prompts/<x>_<y>.md     # only when non-empty
   chunks/<x>_<y>.png     # only when Ready
+  placements.json        # only when any placement is non-zero
+  seams/<key>.json       # only for user-edited seam overrides
 ```
 
 Desktop owns a long-lived in-memory `ProjectDocument`. CLI commands execute

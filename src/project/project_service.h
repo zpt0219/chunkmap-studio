@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/result.h"
+#include "image/image_registration.h"
 #include "image/seam_analyzer.h"
 #include "image/image_pipeline.h"
 #include "model/project.h"
@@ -61,6 +62,12 @@ struct ChunkWriteResult {
     int added_top = 0;
     int added_right = 0;
     int added_bottom = 0;
+    ImageRegistrationResult registration;
+};
+
+struct ChunkAlignmentResult {
+    ImageBuffer image;
+    ImageRegistrationResult registration;
 };
 
 class ProjectService {
@@ -103,7 +110,24 @@ public:
     Result<ChunkWriteResult> write_chunk_image(
         Project& project, ChunkCoord coord, const std::filesystem::path& image_path,
         const NeighborImages& neighbors);
-    Result<void> remove_chunk_image(const Project& project, ChunkCoord coord) const;
+    Result<ChunkAlignmentResult> preview_chunk_alignment(
+        const Project& project,
+        ChunkCoord coord,
+        const ImageBuffer& source,
+        const NeighborImages& neighbors,
+        bool automatic,
+        int offset_x,
+        int offset_y) const;
+    Result<ChunkWriteResult> apply_chunk_shift(
+        Project& project,
+        ChunkCoord coord,
+        int offset_x,
+        int offset_y) const;
+    Result<void> set_chunk_placement(
+        Project& project, ChunkCoord coord, ChunkPlacement placement) const;
+    Result<void> set_seam(Project& project, SeamDefinition seam) const;
+    Result<void> reset_seam(Project& project, SeamKey key) const;
+    Result<void> remove_chunk_image(Project& project, ChunkCoord coord) const;
     Result<SeamAnalysis> inspect_seam(
         const Project& project, ChunkCoord coord, SeamDirection direction) const;
 

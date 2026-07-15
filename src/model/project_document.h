@@ -34,6 +34,11 @@ public:
     ChunkDocument& chunk(ChunkCoord coord);
     const ChunkDocument& chunk(ChunkCoord coord) const;
     Result<const ImageBuffer*> image(ChunkCoord coord) const;
+    ChunkPlacement placement(ChunkCoord coord) const;
+    const SeamDefinition* seam_override(SeamKey key) const;
+    void set_placement(ChunkCoord coord, ChunkPlacement placement);
+    void set_seam(SeamDefinition seam);
+    void reset_seam(SeamKey key);
     void replace_image(ChunkCoord coord, ImageBuffer image);
     void remove_image(ChunkCoord coord);
     void reset_empty_grid();

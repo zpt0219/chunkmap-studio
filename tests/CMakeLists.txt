@@ -12,6 +12,8 @@ add_executable(chunkmap_tests
     test_full_map_export.cpp
     test_golden_images.cpp
     test_image_pipeline.cpp
+    test_image_registration.cpp
+    test_layout_renderer.cpp
     test_map_zoom.cpp
     test_phase6_architecture.cpp
     test_project_service.cpp

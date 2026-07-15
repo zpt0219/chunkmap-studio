@@ -1,7 +1,9 @@
 #include "project/project_service.h"
 
 #include "image/image_buffer.h"
+#include "image/layout_renderer.h"
 #include "image/image_pipeline.h"
+#include "image/image_registration.h"
 #include "io/atomic_file.h"
 #include "prompt_authoring_guide.h"
 
@@ -156,7 +158,10 @@ Result<NeighborImages> load_neighbors(const Project& project, ChunkCoord coord) 
         }
         auto image = ImageBuffer::load(project.paths.chunk_image(neighbor));
         if (!image) return Result<void>::failure(image.error().code, image.error().message);
-        destination = image.take_value();
+        auto placed = LayoutRenderer::render_placed_chunk(
+            image.value(), project.config, project.layout.placement(neighbor));
+        if (!placed) return Result<void>::failure(placed.error().code, placed.error().message);
+        destination = placed.take_value();
         return Result<void>::success();
     };
     for (const auto& entry : std::vector<std::pair<ChunkCoord, std::optional<ImageBuffer>*>>{
@@ -179,8 +184,8 @@ Result<void> ProjectService::validate_config(const ProjectConfig& config) const 
     if (!is_valid_project_name(config.name)) {
         return Result<void>::failure("invalid_project_name", "Invalid project name: " + config.name);
     }
-    if (config.schema_version != 2) {
-        return Result<void>::failure("unsupported_schema", "Only project schema version 2 is supported.");
+    if (config.schema_version != 3) {
+        return Result<void>::failure("unsupported_schema", "Only project schema version 3 is supported.");
     }
     if (config.columns <= 0 || config.rows <= 0) {
         return Result<void>::failure("invalid_grid", "Columns and rows must be positive.");
@@ -255,7 +260,7 @@ Result<Project> ProjectService::create_project(const CreateProjectRequest& reque
         return Result<Project>::failure(concept_saved.error().code, concept_saved.error().message);
     }
 
-    Project project{std::move(config), std::move(paths)};
+    Project project{std::move(config), std::move(paths), {}};
     auto saved = repository_.save(project);
     if (!saved) {
         std::filesystem::remove_all(project.paths.root(), error);
@@ -267,7 +272,7 @@ Result<Project> ProjectService::create_project(const CreateProjectRequest& reque
 Result<Project> ProjectService::open_project(const std::string& project_name) const {
     auto loaded = repository_.load(project_name);
     if (!loaded) return loaded;
-    auto valid = validate_config(loaded.value().config);
+    auto valid = validate(loaded.value());
     if (!valid) return Result<Project>::failure(valid.error().code, valid.error().message);
     return loaded;
 }
@@ -337,6 +342,23 @@ Result<void> ProjectService::validate(const Project& project) const {
 
     if (!path_is_regular_file(project.paths.concept_source())) {
         return Result<void>::failure("missing_concept", "Concept image is missing.");
+    }
+    if (project.config.has_chunk_size()) {
+        auto limits = ImageRegistration::limits(project.config);
+        if (!limits) return Result<void>::failure(limits.error().code, limits.error().message);
+        for (const auto& [coord, placement] : project.layout.placements) {
+            if (!project.config.contains(coord) ||
+                std::abs(placement.offset_x) > limits.value().maximum_x ||
+                std::abs(placement.offset_y) > limits.value().maximum_y) {
+                return Result<void>::failure(
+                    "invalid_chunk_placement", "Stored Chunk placement is outside the safe range.");
+            }
+        }
+        for (const auto& [key, seam] : project.layout.seams) {
+            (void)key;
+            auto valid = LayoutRenderer::validate_seam(project.config, seam);
+            if (!valid) return valid;
+        }
     }
     for (int y = 0; y < project.config.rows; ++y) {
         for (int x = 0; x < project.config.columns; ++x) {
@@ -629,6 +651,7 @@ Result<ChunkContext> ProjectService::export_chunk_context(
         {"template", context.template_image.string()},
         {"mask", context.mask_image.string()},
         {"mask_convention", "white_generate_black_protect"},
+        {"protected_anchor_pixels", 1},
         {"global_prompt", context.global_prompt.string()},
         {"chunk_prompt", context.chunk_prompt.string()},
         {"prompt", context.prompt.string()},
@@ -642,7 +665,12 @@ Result<ChunkContext> ProjectService::export_chunk_context(
     ImageBuffer mask(template_image.value().width(), template_image.value().height());
     for (int y = 0; y < mask.height(); ++y) {
         for (int x = 0; x < mask.width(); ++x) {
-            const bool generate = template_image.value().pixel(x, y)[3] == 0;
+            const bool protect =
+                (neighbors.top && y == 0) ||
+                (neighbors.bottom && y == mask.height() - 1) ||
+                (neighbors.left && x == 0) ||
+                (neighbors.right && x == mask.width() - 1);
+            const bool generate = !protect;
             auto* pixel = mask.pixel(x, y);
             pixel[0] = generate ? 255U : 0U;
             pixel[1] = generate ? 255U : 0U;
@@ -719,6 +747,11 @@ Result<ChunkWriteResult> ProjectService::store_chunk_image(
         project.config.chunk_height = source.value().height();
         initialized_size = true;
     }
+    if (source.value().width() != *project.config.chunk_width ||
+        source.value().height() != *project.config.chunk_height) {
+        return Result<ChunkWriteResult>::failure(
+            "chunk_size_mismatch", "Chunk image must exactly match the project Chunk size.");
+    }
     NeighborImages loaded_neighbors;
     if (!supplied_neighbors) {
         auto neighbors = load_neighbors(project, coord);
@@ -730,25 +763,33 @@ Result<ChunkWriteResult> ProjectService::store_chunk_image(
         return Result<ChunkWriteResult>::failure(
             "no_ready_neighbor", "Generated chunk writes require at least one Ready orthogonal neighbor.");
     }
-    auto normalized = ImageNormalizer::normalize(
-        source.value(), project.config, coord, *supplied_neighbors);
-    if (!normalized) return Result<ChunkWriteResult>::failure(
-        normalized.error().code, normalized.error().message);
-    ImageBuffer final_image = normalized.value().image;
+    ImageRegistrationResult registration;
     if (require_ready_neighbor) {
-        auto protected_template = TemplateBuilder::build(project.config, *supplied_neighbors);
-        if (!protected_template) return Result<ChunkWriteResult>::failure(
-            protected_template.error().code, protected_template.error().message);
-        for (int y = 0; y < final_image.height(); ++y) {
-            for (int x = 0; x < final_image.width(); ++x) {
-                if (protected_template.value().pixel(x, y)[3] != 0U) {
-                    std::copy_n(protected_template.value().pixel(x, y), 4, final_image.pixel(x, y));
-                }
-            }
+        auto aligned = ImageRegistration::align(
+            source.value(), project.config, *supplied_neighbors);
+        if (!aligned) return Result<ChunkWriteResult>::failure(
+            aligned.error().code, aligned.error().message);
+        registration = aligned.take_value();
+    }
+    auto source_bytes = atomic_file::read_binary(image_path);
+    if (!source_bytes) return Result<ChunkWriteResult>::failure(
+        source_bytes.error().code, source_bytes.error().message);
+    auto saved = atomic_file::write_binary(
+        project.paths.chunk_image(coord), source_bytes.value());
+    if (!saved) return Result<ChunkWriteResult>::failure(saved.error().code, saved.error().message);
+    if (require_ready_neighbor) {
+        const ChunkPlacement old = project.layout.placement(coord);
+        const ChunkPlacement placement{registration.offset_x, registration.offset_y};
+        if (placement.is_zero()) project.layout.placements.erase(coord);
+        else project.layout.placements[coord] = placement;
+        auto placement_saved = repository_.save_placements(project);
+        if (!placement_saved) {
+            if (old.is_zero()) project.layout.placements.erase(coord);
+            else project.layout.placements[coord] = old;
+            return Result<ChunkWriteResult>::failure(
+                placement_saved.error().code, placement_saved.error().message);
         }
     }
-    auto saved = final_image.save_png(project.paths.chunk_image(coord));
-    if (!saved) return Result<ChunkWriteResult>::failure(saved.error().code, saved.error().message);
     if (initialized_size) {
         auto project_saved = repository_.save(project);
         if (!project_saved) return Result<ChunkWriteResult>::failure(
@@ -756,19 +797,144 @@ Result<ChunkWriteResult> ProjectService::store_chunk_image(
     }
     ChunkWriteResult result;
     result.image = project.paths.chunk_image(coord);
-    result.added_left = normalized.value().added_left;
-    result.added_top = normalized.value().added_top;
-    result.added_right = normalized.value().added_right;
-    result.added_bottom = normalized.value().added_bottom;
+    registration.image = {};
+    result.registration = std::move(registration);
     return Result<ChunkWriteResult>::success(std::move(result));
 }
 
-Result<void> ProjectService::remove_chunk_image(const Project& project, ChunkCoord coord) const {
+Result<ChunkAlignmentResult> ProjectService::preview_chunk_alignment(
+    const Project& project,
+    ChunkCoord coord,
+    const ImageBuffer& source,
+    const NeighborImages& neighbors,
+    bool automatic,
+    int offset_x,
+    int offset_y) const {
+    auto coord_result = validate_coord(project, coord);
+    if (!coord_result) return Result<ChunkAlignmentResult>::failure(
+        coord_result.error().code, coord_result.error().message);
+    ImageRegistrationResult registration;
+    if (automatic) {
+        auto aligned = ImageRegistration::align(source, project.config, neighbors);
+        if (!aligned) return Result<ChunkAlignmentResult>::failure(
+            aligned.error().code, aligned.error().message);
+        registration = aligned.take_value();
+    } else {
+        auto limits = ImageRegistration::limits(project.config);
+        if (!limits) return Result<ChunkAlignmentResult>::failure(
+            limits.error().code, limits.error().message);
+        if (std::abs(offset_x) > limits.value().maximum_x ||
+            std::abs(offset_y) > limits.value().maximum_y) {
+            return Result<ChunkAlignmentResult>::failure(
+                "registration_offset_out_of_range",
+                "Chunk placement exceeds the safe registration range.");
+        }
+        registration.offset_x = offset_x;
+        registration.offset_y = offset_y;
+        registration.applied = offset_x != 0 || offset_y != 0;
+    }
+    auto placed = LayoutRenderer::render_placed_chunk(
+        source, project.config, {registration.offset_x, registration.offset_y});
+    if (!placed) return Result<ChunkAlignmentResult>::failure(
+        placed.error().code, placed.error().message);
+    ChunkAlignmentResult result;
+    result.image = placed.take_value();
+    registration.image = {};
+    result.registration = std::move(registration);
+    return Result<ChunkAlignmentResult>::success(std::move(result));
+}
+
+Result<ChunkWriteResult> ProjectService::apply_chunk_shift(
+    Project& project,
+    ChunkCoord coord,
+    int offset_x,
+    int offset_y) const {
+    auto saved = set_chunk_placement(project, coord, {offset_x, offset_y});
+    if (!saved) return Result<ChunkWriteResult>::failure(saved.error().code, saved.error().message);
+    ChunkWriteResult result;
+    result.image = project.paths.chunk_image(coord);
+    result.registration.offset_x = offset_x;
+    result.registration.offset_y = offset_y;
+    result.registration.applied = offset_x != 0 || offset_y != 0;
+    return Result<ChunkWriteResult>::success(std::move(result));
+}
+
+Result<void> ProjectService::set_chunk_placement(
+    Project& project, ChunkCoord coord, ChunkPlacement placement) const {
+    auto coord_result = validate_coord(project, coord);
+    if (!coord_result) return coord_result;
+    if (!path_is_regular_file(project.paths.chunk_image(coord))) {
+        return Result<void>::failure(
+            "chunk_empty", "Chunk placement requires a Ready source image.");
+    }
+    auto limits = ImageRegistration::limits(project.config);
+    if (!limits) return Result<void>::failure(limits.error().code, limits.error().message);
+    if (std::abs(placement.offset_x) > limits.value().maximum_x ||
+        std::abs(placement.offset_y) > limits.value().maximum_y) {
+        return Result<void>::failure(
+            "registration_offset_out_of_range", "Chunk placement exceeds the safe range.");
+    }
+    const ChunkPlacement old = project.layout.placement(coord);
+    if (placement.is_zero()) project.layout.placements.erase(coord);
+    else project.layout.placements[coord] = placement;
+    auto saved = repository_.save_placements(project);
+    if (!saved) {
+        if (old.is_zero()) project.layout.placements.erase(coord);
+        else project.layout.placements[coord] = old;
+    }
+    return saved;
+}
+
+Result<void> ProjectService::set_seam(Project& project, SeamDefinition seam) const {
+    auto valid = LayoutRenderer::validate_seam(project.config, seam);
+    if (!valid) return valid;
+    if (!path_is_regular_file(project.paths.chunk_image(seam.key.first)) ||
+        !path_is_regular_file(project.paths.chunk_image(seam_second(seam.key)))) {
+        return Result<void>::failure(
+            "seam_not_ready", "Both chunks must be Ready before editing their seam.");
+    }
+    const auto old = project.layout.seams.find(seam.key);
+    std::optional<SeamDefinition> previous;
+    if (old != project.layout.seams.end()) previous = old->second;
+    const SeamKey key = seam.key;
+    project.layout.seams[key] = std::move(seam);
+    auto saved = repository_.save_seam(project, key);
+    if (!saved) {
+        if (previous) project.layout.seams[key] = std::move(*previous);
+        else project.layout.seams.erase(key);
+    }
+    return saved;
+}
+
+Result<void> ProjectService::reset_seam(Project& project, SeamKey key) const {
+    const auto found = project.layout.seams.find(key);
+    if (found == project.layout.seams.end()) return Result<void>::success();
+    const SeamDefinition previous = found->second;
+    project.layout.seams.erase(found);
+    auto removed = repository_.remove_seam(project, key);
+    if (!removed) project.layout.seams[key] = previous;
+    return removed;
+}
+
+Result<void> ProjectService::remove_chunk_image(Project& project, ChunkCoord coord) const {
     auto coord_result = validate_coord(project, coord);
     if (!coord_result) return coord_result;
     std::error_code error;
     std::filesystem::remove(project.paths.chunk_image(coord), error);
     if (error) return Result<void>::failure("remove_failed", "Unable to remove chunk image.");
+    project.layout.placements.erase(coord);
+    auto placements = repository_.save_placements(project);
+    if (!placements) return placements;
+    for (const SeamKey key : {
+             SeamKey{coord, SeamDirection::Right},
+             SeamKey{coord, SeamDirection::Bottom},
+             SeamKey{{coord.x - 1, coord.y}, SeamDirection::Right},
+             SeamKey{{coord.x, coord.y - 1}, SeamDirection::Bottom}}) {
+        if (project.layout.seams.erase(key) > 0U) {
+            auto removed = repository_.remove_seam(project, key);
+            if (!removed) return removed;
+        }
+    }
     return Result<void>::success();
 }
 

@@ -40,6 +40,44 @@ TEST_CASE("command codec preserves typed payload") {
     CHECK(payload->image == std::filesystem::path("/tmp/generated image.png"));
 }
 
+TEST_CASE("command codec preserves chunk alignment payload") {
+    auto original = request(
+        chunkmap::CommandType::ChunkAlignmentPreview,
+        "/tmp/work space", "codec-alignment", "world");
+    original.payload = chunkmap::ChunkAlignmentPayload{{2, 3}, -12, 7, true};
+    auto decoded = chunkmap::decode_command_request(
+        chunkmap::encode_command_request(original));
+    REQUIRE(decoded);
+    CHECK(decoded.value().type == chunkmap::CommandType::ChunkAlignmentPreview);
+    const auto* payload =
+        std::get_if<chunkmap::ChunkAlignmentPayload>(&decoded.value().payload);
+    REQUIRE(payload != nullptr);
+    CHECK(payload->coord == chunkmap::ChunkCoord{2, 3});
+    CHECK(payload->offset_x == -12);
+    CHECK(payload->offset_y == 7);
+    CHECK(payload->automatic);
+}
+
+TEST_CASE("command codec preserves editable seam payload") {
+    auto original = request(
+        chunkmap::CommandType::SeamSet, "/tmp/work space", "codec-seam", "world");
+    chunkmap::SeamDefinition seam;
+    seam.key = {{1, 2}, chunkmap::SeamDirection::Bottom};
+    seam.feather_width = 18;
+    seam.points = {{0.0, 0.4}, {0.6, 0.7}, {1.0, 0.5}};
+    original.payload = chunkmap::SeamSetPayload{seam};
+    auto decoded = chunkmap::decode_command_request(
+        chunkmap::encode_command_request(original));
+    REQUIRE(decoded);
+    const auto* payload = std::get_if<chunkmap::SeamSetPayload>(&decoded.value().payload);
+    REQUIRE(payload != nullptr);
+    CHECK(payload->seam.key == seam.key);
+    CHECK(payload->seam.feather_width == 18);
+    REQUIRE(payload->seam.points.size() == 3U);
+    CHECK(payload->seam.points[1].along == doctest::Approx(0.6));
+    CHECK(payload->seam.points[1].across == doctest::Approx(0.7));
+}
+
 TEST_CASE("command codec preserves project current without a project name") {
     auto original = request(
         chunkmap::CommandType::ProjectCurrent, "/tmp/work space", "codec-current");
@@ -139,6 +177,72 @@ TEST_CASE("first chunk import requests global prompt exactly once") {
     auto second_result = queue.submit(std::move(second)).get();
     REQUIRE(second_result);
     CHECK_FALSE(second_result.value().data.contains("global_prompt_action"));
+
+    queue.stop_and_drain();
+    std::filesystem::remove_all(workspace, error);
+}
+
+TEST_CASE("chunk alignment preview is read only and save publishes placement only") {
+    const auto workspace = std::filesystem::temp_directory_path() /
+        "chunkmap-alignment-command";
+    std::error_code error;
+    std::filesystem::remove_all(workspace, error);
+    const auto fixture = std::filesystem::path(CHUNKMAP_TEST_SOURCE_DIR) /
+        "fixtures/chunk.png";
+
+    chunkmap::DocumentCommandQueue queue;
+    auto create = request(
+        chunkmap::CommandType::ProjectCreate, workspace, "alignment-1", "world");
+    create.payload = chunkmap::ProjectCreatePayload{
+        "world", fixture, 2, 1, 0.15, 0.15};
+    REQUIRE(queue.submit(std::move(create)).get());
+    for (int x = 0; x < 2; ++x) {
+        auto import = request(
+            chunkmap::CommandType::ChunkImport, workspace,
+            "alignment-import-" + std::to_string(x), "world");
+        import.payload = chunkmap::ChunkImagePayload{{x, 0}, fixture};
+        REQUIRE(queue.submit(std::move(import)).get());
+    }
+
+    auto auto_request = request(
+        chunkmap::CommandType::ChunkAlignmentPreview,
+        workspace, "alignment-auto", "world");
+    auto_request.payload = chunkmap::ChunkAlignmentPayload{{1, 0}, 0, 0, true};
+    auto automatic = queue.submit(std::move(auto_request)).get();
+    REQUIRE(automatic);
+    const auto& registration = automatic.value().data.at("registration");
+    REQUIRE(registration.contains("comparison"));
+    CHECK(registration.at("comparison").at("candidates").contains(
+        "low_resolution_2d"));
+    CHECK(registration.at("comparison").at("candidates").contains("projection"));
+
+    auto preview_request = request(
+        chunkmap::CommandType::ChunkAlignmentPreview,
+        workspace, "alignment-preview", "world");
+    preview_request.payload = chunkmap::ChunkAlignmentPayload{{1, 0}, 1, 0, false};
+    auto preview = queue.submit(std::move(preview_request)).get();
+    REQUIRE(preview);
+    REQUIRE(preview.value().alignment_preview_image);
+    CHECK_FALSE(preview.value().changes.project.has_value());
+    CHECK(preview.value().changes.changed_chunks.empty());
+    CHECK(preview.value().data.at("registration").at("offset") ==
+          nlohmann::json::array({1, 0}));
+
+    auto apply_request = request(
+        chunkmap::CommandType::ChunkShiftApply,
+        workspace, "alignment-apply", "world");
+    apply_request.payload = chunkmap::ChunkAlignmentPayload{{1, 0}, 1, 0, false};
+    auto applied = queue.submit(std::move(apply_request)).get();
+    REQUIRE(applied);
+    CHECK_FALSE(applied.value().changed_chunk_image);
+    CHECK(applied.value().changes.changed_chunks.empty());
+    CHECK(applied.value().changes.changed_placements ==
+          std::vector<chunkmap::ChunkCoord>{{1, 0}});
+    REQUIRE(applied.value().project_snapshot);
+    CHECK(applied.value().project_snapshot->layout.placement({1, 0}).offset_x == 1);
+    CHECK(applied.value().project_snapshot->layout.placement({1, 0}).offset_y == 0);
+    CHECK(applied.value().data.at("registration").at("offset") ==
+          nlohmann::json::array({1, 0}));
 
     queue.stop_and_drain();
     std::filesystem::remove_all(workspace, error);

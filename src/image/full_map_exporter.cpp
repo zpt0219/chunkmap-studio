@@ -1,6 +1,7 @@
 #include "image/full_map_exporter.h"
 
 #include "image/png_stream_writer.h"
+#include "image/layout_renderer.h"
 #include "io/atomic_file.h"
 #include "ui/map_geometry.h"
 
@@ -90,6 +91,30 @@ struct TempFileCleanup {
         if (!keep) remove_if_present(path);
     }
 };
+
+void blit_to_band(const ImageBuffer& image,
+                  int world_x,
+                  int world_y,
+                  int band_y,
+                  int band_rows,
+                  std::size_t row_bytes,
+                  std::vector<std::uint8_t>& band) {
+    const int source_top = std::max(0, band_y - world_y);
+    const int source_bottom = std::min(image.height(), band_y + band_rows - world_y);
+    const int source_left = std::max(0, -world_x);
+    const int source_right = std::min(
+        image.width(), static_cast<int>(row_bytes / 4U) - world_x);
+    if (source_top >= source_bottom || source_left >= source_right) return;
+    for (int source_y = source_top; source_y < source_bottom; ++source_y) {
+        const int destination_y = world_y + source_y - band_y;
+        const auto* source = image.pixel(source_left, source_y);
+        auto* destination = band.data() +
+            static_cast<std::size_t>(destination_y) * row_bytes +
+            static_cast<std::size_t>(world_x + source_left) * 4U;
+        std::copy_n(source, static_cast<std::size_t>(source_right - source_left) * 4U,
+                    destination);
+    }
+}
 
 }  // namespace
 
@@ -185,21 +210,53 @@ Result<FullMapExportResult> export_full_map(
                     return Result<FullMapExportResult>::failure(
                         image.error().code, image.error().message);
                 }
-                const int destination_x = x * geometry.value().step_x;
-                for (int source_y = source_top; source_y < source_bottom; ++source_y) {
-                    const int destination_y = chunk_top + source_y - band_y;
-                    const auto* source = image.value()->pixel(0, source_y);
-                    auto* destination = band.data() +
-                        static_cast<std::size_t>(destination_y) * row_bytes +
-                        static_cast<std::size_t>(destination_x) * 4U;
-                    std::copy_n(source,
-                                static_cast<std::size_t>(geometry.value().chunk_width) * 4U,
-                                destination);
-                }
+                auto placed = LayoutRenderer::render_placed_chunk(
+                    *image.value(), document.config(), document.placement(coord));
+                if (!placed) return Result<FullMapExportResult>::failure(
+                    placed.error().code, placed.error().message);
+                blit_to_band(placed.value(), x * geometry.value().step_x, chunk_top,
+                             band_y, rows, row_bytes, band);
                 ++completed_work;
                 if (progress) {
                     progress(completed_work, total_work,
                              "Composited chunk " + coord_name(coord));
+                }
+            }
+        }
+
+        // Seam patches are the only derived pixels. Draw vertical seams first,
+        // then horizontal seams, matching the Desktop canvas order.
+        for (const auto direction : {SeamDirection::Right, SeamDirection::Bottom}) {
+            for (int y = 0; y < document.config().rows; ++y) {
+                for (int x = 0; x < document.config().columns; ++x) {
+                    const SeamKey key{{x, y}, direction};
+                    const ChunkCoord second = seam_second(key);
+                    if (!document.config().contains(second) ||
+                        !document.chunk(key.first).ready || !document.chunk(second).ready) {
+                        continue;
+                    }
+                    auto first_image = document.image(key.first);
+                    auto second_image = document.image(second);
+                    if (!first_image || !second_image) {
+                        const auto& error = !first_image ? first_image.error() : second_image.error();
+                        return Result<FullMapExportResult>::failure(error.code, error.message);
+                    }
+                    const SeamDefinition seam = document.seam_override(key)
+                        ? *document.seam_override(key)
+                        : LayoutRenderer::default_seam(document.config(), key);
+                    auto patch = LayoutRenderer::render_seam_patch(
+                        *first_image.value(), *second_image.value(), document.config(),
+                        document.placement(key.first), document.placement(second), seam);
+                    if (!patch) return Result<FullMapExportResult>::failure(
+                        patch.error().code, patch.error().message);
+                    const int patch_x = direction == SeamDirection::Right
+                        ? second.x * geometry.value().step_x
+                        : key.first.x * geometry.value().step_x;
+                    const int patch_y = direction == SeamDirection::Bottom
+                        ? second.y * geometry.value().step_y
+                        : key.first.y * geometry.value().step_y;
+                    blit_to_band(patch.value(), patch_x, patch_y,
+                                 band_y, rows, row_bytes, band);
                 }
             }
         }

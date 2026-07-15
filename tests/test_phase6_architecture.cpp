@@ -84,12 +84,12 @@ TEST_CASE("prompt authoring guide is mandatory and embedded into handoff") {
     CHECK(agents.find("docs/PROMPT_AUTHORING_GUIDE.md") != std::string::npos);
     CHECK(agents.find("This is mandatory") != std::string::npos);
     CHECK(agents.find("or generating any Chunk") != std::string::npos);
-    CHECK(guide.find("Specification version: 2") != std::string::npos);
+    CHECK(guide.find("Specification version: 3") != std::string::npos);
     CHECK(guide.find("Preserve model freedom") != std::string::npos);
     CHECK(guide.find("Interpret Concept symbols semantically") != std::string::npos);
     CHECK(guide.find("gameplay-ready overworld tilemap") != std::string::npos);
     CHECK(guide.find("Generation-time Prompt discipline") != std::string::npos);
-    CHECK(guide.find("A Seam difference of `0.0`") != std::string::npos);
+    CHECK(guide.find("actual Desktop result also depends on placement") != std::string::npos);
     CHECK(guide.find("Regenerating adjacent drifted Chunks") != std::string::npos);
     CHECK(cmake.find("file(READ \"${CMAKE_SOURCE_DIR}/docs/PROMPT_AUTHORING_GUIDE.md\"") !=
           std::string::npos);
@@ -104,4 +104,17 @@ TEST_CASE("concept comparison is a momentary desktop-only review control") {
     CHECK(app.find("Button(\"Hold: Full Map\"") != std::string::npos);
     CHECK(app.find("Button(\"Export Concept Slice...\"") != std::string::npos);
     CHECK(repository.find("compare_full_concept") == std::string::npos);
+}
+
+TEST_CASE("alignment panel compares and switches two transient algorithms") {
+    const auto app = read_source("desktop/src/app.cpp");
+    const auto header = read_source("desktop/src/app.h");
+    const auto registration = read_source("src/image/image_registration.cpp");
+    CHECK(app.find("Preview result") != std::string::npos);
+    CHECK(app.find("Low-resolution 2D") != std::string::npos);
+    CHECK(app.find("Projection") != std::string::npos);
+    CHECK(header.find("AlignmentComparisonSummary") != std::string::npos);
+    CHECK(registration.find("low_resolution_candidate") != std::string::npos);
+    CHECK(registration.find("projection_candidate") != std::string::npos);
+    CHECK(registration.find("refine_candidate") != std::string::npos);
 }

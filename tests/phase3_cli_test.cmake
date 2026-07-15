@@ -31,10 +31,10 @@ if(NOT LAST_OUTPUT MATCHES "authoring_guide")
 endif()
 set(handoff_root "${WORKSPACE}/.chunkmap/handoff/phase3-world")
 file(READ "${handoff_root}/prompt-authoring-guide.md" authoring_guide)
-if(NOT authoring_guide MATCHES "Specification version: 2" OR
+if(NOT authoring_guide MATCHES "Specification version: 3" OR
    NOT authoring_guide MATCHES "gameplay-ready overworld tilemap" OR
    NOT authoring_guide MATCHES "Generation-time Prompt discipline")
-    message(FATAL_ERROR "Exported Prompt guide is not the required Version 2")
+    message(FATAL_ERROR "Exported Prompt guide is not the required Version 3")
 endif()
 
 run_chunkmap(--project phase3-world --json global-prompt show)
@@ -93,8 +93,8 @@ if(NOT combined_prompt MATCHES "GLOBAL VISUAL STYLE" OR
     message(FATAL_ERROR "Chunk context did not include Global Prompt: ${combined_prompt}")
 endif()
 run_chunkmap(--project phase3-world --json chunk write 0,1 --image "${IMAGE}")
-if(LAST_OUTPUT MATCHES "registration" OR LAST_OUTPUT MATCHES "composite")
-    message(FATAL_ERROR "Chunk write leaked removed derived state: ${LAST_OUTPUT}")
+if(NOT LAST_OUTPUT MATCHES "\"registration\"" OR LAST_OUTPUT MATCHES "composite")
+    message(FATAL_ERROR "Chunk write did not report transient registration cleanly: ${LAST_OUTPUT}")
 endif()
 run_chunkmap(--project phase3-world --json seam inspect 0,1 --direction right)
 run_chunkmap(--project phase3-world project validate)

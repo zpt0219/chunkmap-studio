@@ -1,6 +1,6 @@
 # ChunkMap Studio 当前代码架构
 
-状态：schema v2 / in-memory document architecture
+状态：schema v3 / non-destructive layout architecture
 
 这份文档描述当前实现。历史设计与已完成计划统一归档在
 [historical/](./historical/README.md)。
@@ -84,13 +84,16 @@ output/<project-name>/
     <x>_<y>.md           # 仅非空时存在
   chunks/
     <x>_<y>.png          # 仅 Ready 时存在
+  placements.json        # 仅存在非零 placement 时存在
+  seams/
+    <canonical-key>.json # 仅用户编辑过的 Seam override
 ```
 
-`project.json` schema v2 只保存：
+`project.json` schema v3 只保存：
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "columns": 4,
   "rows": 4,
   "chunk_size": [1024, 1024],
@@ -99,7 +102,7 @@ output/<project-name>/
 ```
 
 项目名来自目录名；Concept 路径固定；不重复保存 `name`、`concept_file` 或
-`feather_ratio`。schema v1 在打开时一次性迁移正式内容，然后删除旧 `concept/`、
+`feather_ratio`。schema v1/v2 在打开时一次性迁移正式内容，然后删除旧 `concept/`、
 `context/`、`cache/`、metadata 与坐标子目录。
 
 ## 5. 正式文件与 handoff
@@ -111,6 +114,9 @@ output/<project-name>/
 - Seam overlap/difference/metrics；
 - Chunk metadata；
 - Composite。
+
+非零 Chunk placement 稀疏保存在 `placements.json`；用户编辑过的 Seam 以 canonical
+right/bottom key 分文件保存在 `seams/`。两者都是排版参数，不是派生图片。
 
 Concept 与 Chunk Context 导出到：
 
@@ -136,23 +142,27 @@ Concept region，写入用户选择的项目外 PNG，不创建整套 regions，
 
 - 任意坐标均可导入，不要求邻居；
 - 第一张图确定 `chunk_size`；
-- 允许确定性的 1px 尺寸补齐；
-- 保存为一个正式 Ready PNG。
+- 要求精确匹配 Chunk 尺寸；
+- 不静默平移或覆盖邻居 overlap；
+- 原样保存为一个正式 Ready PNG。
 
 `chunk write`：
 
 - 至少需要一个 Ready 正交邻居；
-- 使用同一套尺寸验证与 1px normalization；
-- 从 fresh template 恢复所有 opaque 保护像素；
-- 只原子替换目标 Chunk PNG。
+- 使用严格尺寸验证并原样保存目标 Chunk PNG；
+- 根据所有 Ready 正交邻居执行有限、确定性的整体平移 registration；
+- 将 offset 稀疏保存为 placement，不把平移烘焙进 PNG；
+- 不执行羽化、protected restore 或任何 PNG 后处理。
 
-不进行自动平移 registration，不写 metadata，不重建 Seam 或 Composite。Seam Inspect
-按请求读取两张正式图并在内存返回 metrics、overlap preview 与 difference preview。
+Seam 是独立排版层：canonical right/bottom pair 保存可编辑折线和 feather width。Core
+仅为 overlap 尺寸生成小 patch；Canvas 和 Full Map Export 使用相同 renderer 与固定的
+right-then-bottom 顺序。Seam Inspect 按请求读取 placement 后的两张图并在内存返回 metrics、
+overlap preview 与 difference preview。
 
 ## 7. Desktop 渲染
 
-Map Canvas 根据 overlap geometry 逐张绘制 Ready chunk texture。后绘制的更大坐标拥有
-overlap 区域，命中测试采用相同顺序。Empty 坐标直接使用 `concept.png` 的 UV 子区域
+Map Canvas 根据 overlap geometry 与 placement UV 逐张绘制原始 Ready texture，再叠加
+缓存于内存的小型 Seam patch；不存在完整合成贴图。Empty 坐标直接使用 `concept.png` 的 UV 子区域
 作为背景，不生成 region crop。
 
 缩放交互与 `tile_map_editor_imgui` Toolbar 对齐：Reset Scale 回到 1:1 与左上角，Fit Map
@@ -169,6 +179,16 @@ overlap 区域，命中测试采用相同顺序。Empty 坐标直接使用 `conc
 Desktop Import 使用异步 command completion，不阻塞 frame loop。Seam preview 也直接从
 内存 `ImageBuffer` 上传临时 texture。
 
+Ready Chunk 的 Alignment 控件使用 `ChunkAlignmentPreview` 在内存生成手动或 Auto 平移
+预览，Canvas 与 Inspector 共用临时 texture；`ChunkShiftApply` 只保存 placement JSON。
+切换 Chunk、项目、Reload 或 App 失焦会丢弃瞬时预览；保存后的 offset 会随项目重载。
+
+Seam Editor 是 modeless window，只解码两张相邻原图并重算 overlap patch。折线控制点可
+拖动、添加、删除，feather width 可实时调整；Save 只写 Seam JSON，Cancel 恢复已保存参数。
+
+Auto 的 Core 边界分为 Low-resolution 2D、Projection、共同精修/选优三部分。两个算法都运行，
+共同 score 选择默认结果；Panel 保留两组瞬时诊断并允许切换预览，不把算法选择写入项目。
+
 Chunk Inspector 的 `Hold: This Chunk` 与 `Hold: Full Map` 是纯瞬时 Desktop 对比控件。
 按住前者时，Canvas 在选中 chunk 的完整 footprint（包括 overlap）显示对应 Concept
 region；按住后者时显示完整 Concept Map。松开按钮、切换 Inspector 页面、切换 chunk
@@ -183,7 +203,7 @@ src/
   ipc/       Desktop local server 与 CLI client transport
   model/     ProjectConfig、ProjectDocument、ChunkDocument
   project/   paths、schema repository、session、业务 service
-  image/     RGBA buffer、geometry、normalization、template、seam analysis
+  image/     RGBA buffer、geometry、registration、layout renderer、template、seam analysis
   io/        atomic file writes
   ui/        与 ImGui 无关的 map geometry/hit testing
 desktop/     App、command host、OpenGL texture cache
@@ -205,8 +225,9 @@ cmake --build build -j 8
 ctest --test-dir build --output-on-failure
 ```
 
-测试覆盖最小目录白名单、sparse Prompt、schema v1→v2 migration、保护像素、无派生文件
-副作用、in-memory session reload 语义、CLI/IPC contract 与 Desktop smoke。
+测试覆盖最小目录、sparse Prompt、schema v1/v2→v3 migration、PNG 不变性、placement/Seam
+持久化、折线 overlap renderer、无派生文件副作用、in-memory session reload 语义、
+CLI/IPC contract 与 Desktop smoke。
 
 ## 10. 明确不做
 

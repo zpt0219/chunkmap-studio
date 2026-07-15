@@ -28,6 +28,8 @@ struct ChangeSet {
     bool concept_changed = false;
     bool global_prompt_changed = false;
     std::vector<ChunkCoord> changed_chunks;
+    std::vector<ChunkCoord> changed_placements;
+    std::vector<SeamKey> changed_seams;
     std::vector<ChunkCoord> changed_prompts;
     std::vector<std::filesystem::path> changed_contexts;
 };
@@ -39,6 +41,7 @@ struct CommandResult {
     std::optional<Project> project_snapshot;
     std::optional<SeamAnalysis> seam_analysis;
     std::shared_ptr<const ImageBuffer> changed_chunk_image;
+    std::shared_ptr<const ImageBuffer> alignment_preview_image;
 };
 
 ProjectKey make_project_key(const std::filesystem::path& workspace,

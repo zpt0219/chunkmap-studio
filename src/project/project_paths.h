@@ -1,6 +1,6 @@
 #pragma once
 
-#include "model/chunk_coord.h"
+#include "model/layout_state.h"
 
 #include <filesystem>
 #include <string>
@@ -33,6 +33,9 @@ public:
     std::filesystem::path concept_source() const;
     std::filesystem::path chunks_dir() const;
     std::filesystem::path prompts_dir() const;
+    std::filesystem::path placements_json() const;
+    std::filesystem::path seams_dir() const;
+    std::filesystem::path seam_file(SeamKey key) const;
     std::filesystem::path chunk_prompt(ChunkCoord coord) const;
     std::filesystem::path chunk_image(ChunkCoord coord) const;
 private:

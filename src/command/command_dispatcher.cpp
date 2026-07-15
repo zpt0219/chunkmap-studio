@@ -2,6 +2,7 @@
 
 #include "image/image_buffer.h"
 #include "image/full_map_exporter.h"
+#include "image/layout_renderer.h"
 #include "io/atomic_file.h"
 #include "project/project_service.h"
 
@@ -30,6 +31,39 @@ json config_json(const ProjectConfig& config) {
         {"chunk_size", chunk_size},
         {"overlap_ratio", {config.horizontal_overlap_ratio, config.vertical_overlap_ratio}},
     };
+}
+
+json registration_json(const ImageRegistrationResult& registration) {
+    json result = {
+        {"applied", registration.applied},
+        {"offset", {registration.offset_x, registration.offset_y}},
+        {"score_before", registration.score_before},
+        {"score_after", registration.score_after},
+        {"relative_improvement", registration.relative_improvement},
+    };
+    const auto candidate_json = [](const ImageRegistrationCandidate& candidate) {
+        return json{
+            {"method", registration_method_name(candidate.method)},
+            {"offset", {candidate.offset_x, candidate.offset_y}},
+            {"score", candidate.score},
+            {"relative_improvement", candidate.relative_improvement},
+            {"accepted", candidate.accepted},
+        };
+    };
+    if (registration.comparison.low_resolution.evaluated &&
+        registration.comparison.projection.evaluated) {
+        result["comparison"] = {
+            {"selected_method", registration_method_name(
+                registration.comparison.selected_method)},
+            {"candidates", {
+                {"low_resolution_2d", candidate_json(
+                    registration.comparison.low_resolution)},
+                {"projection", candidate_json(
+                    registration.comparison.projection)},
+            }},
+        };
+    }
+    return result;
 }
 
 template <typename T>
@@ -79,7 +113,11 @@ Result<NeighborImages> document_neighbors(ProjectDocument& document, ChunkCoord 
         }
         auto image = document.image(neighbor);
         if (!image) return Result<void>::failure(image.error().code, image.error().message);
-        destination = *image.value();
+        auto placed = LayoutRenderer::render_placed_chunk(
+            *image.value(), document.config(), document.placement(neighbor));
+        if (!placed) return Result<void>::failure(
+            placed.error().code, placed.error().message);
+        destination = placed.take_value();
         return Result<void>::success();
     };
     for (const auto& entry : std::vector<std::pair<ChunkCoord, std::optional<ImageBuffer>*>>{
@@ -403,6 +441,9 @@ Result<CommandResult> CommandDispatcher::execute(
                     {"added_right", written.value().added_right},
                     {"added_bottom", written.value().added_bottom}}},
             };
+            if (request.type == CommandType::ChunkWrite) {
+                result.data["registration"] = registration_json(written.value().registration);
+            }
             result.text = (request.type == CommandType::ChunkImport
                 ? "Imported official chunk image " : "Wrote generated chunk image ") +
                 written.value().image.string();
@@ -427,6 +468,11 @@ Result<CommandResult> CommandDispatcher::execute(
                     "write the project Global Prompt with:\n" + write_command;
             }
             result.changes.changed_chunks.push_back(payload.value()->coord);
+            if (request.type == CommandType::ChunkWrite) {
+                result.changes.changed_placements.push_back(payload.value()->coord);
+                result.project_snapshot = project;
+                result.changes.project_changed = true;
+            }
             auto stored_image = ImageBuffer::load(written.value().image);
             if (stored_image) {
                 auto image = stored_image.take_value();
@@ -437,6 +483,84 @@ Result<CommandResult> CommandDispatcher::execute(
                 result.project_snapshot = project;
                 result.changes.project_changed = true;
             }
+            break;
+        }
+
+        case CommandType::ChunkAlignmentPreview: {
+            auto payload = require_payload<ChunkAlignmentPayload>(request);
+            if (!payload) return Result<CommandResult>::failure(
+                payload.error().code, payload.error().message);
+            const auto coord = payload.value()->coord;
+            if (!project.config.contains(coord)) {
+                return Result<CommandResult>::failure(
+                    "chunk_out_of_range", "Chunk coordinate is outside the project grid.");
+            }
+            if (!document.chunk(coord).ready) {
+                return Result<CommandResult>::failure(
+                    "chunk_empty", "Chunk alignment requires a Ready chunk.");
+            }
+            auto source_image = document.image(coord);
+            if (!source_image) return Result<CommandResult>::failure(
+                source_image.error().code, source_image.error().message);
+            ImageBuffer source = *source_image.value();
+            auto neighbors = document_neighbors(document, coord);
+            if (!neighbors) return Result<CommandResult>::failure(
+                neighbors.error().code, neighbors.error().message);
+            if (payload.value()->automatic && neighbors.value().count() == 0) {
+                return Result<CommandResult>::failure(
+                    "no_ready_neighbor", "Automatic alignment requires a Ready orthogonal neighbor.");
+            }
+            auto preview = service.preview_chunk_alignment(
+                project, coord, source, neighbors.value(), payload.value()->automatic,
+                payload.value()->offset_x, payload.value()->offset_y);
+            if (!preview) return Result<CommandResult>::failure(
+                preview.error().code, preview.error().message);
+            auto limits = ImageRegistration::limits(project.config);
+            if (!limits) return Result<CommandResult>::failure(
+                limits.error().code, limits.error().message);
+            result.data = {
+                {"chunk", {coord.x, coord.y}},
+                {"registration", registration_json(preview.value().registration)},
+                {"limits", {limits.value().maximum_x, limits.value().maximum_y}},
+            };
+            result.text = "Previewed chunk alignment " + coord_name(coord) + ".";
+            result.alignment_preview_image =
+                std::make_shared<ImageBuffer>(std::move(preview.value().image));
+            result.changes = {};
+            break;
+        }
+
+        case CommandType::ChunkShiftApply: {
+            auto payload = require_payload<ChunkAlignmentPayload>(request);
+            if (!payload) return Result<CommandResult>::failure(
+                payload.error().code, payload.error().message);
+            if (payload.value()->automatic) {
+                return Result<CommandResult>::failure(
+                    "invalid_command_payload", "Chunk shift apply requires explicit offsets.");
+            }
+            const auto coord = payload.value()->coord;
+            if (!project.config.contains(coord)) {
+                return Result<CommandResult>::failure(
+                    "chunk_out_of_range", "Chunk coordinate is outside the project grid.");
+            }
+            if (!document.chunk(coord).ready) {
+                return Result<CommandResult>::failure(
+                    "chunk_empty", "Chunk shift apply requires a Ready chunk.");
+            }
+            auto written = service.apply_chunk_shift(
+                project, coord, payload.value()->offset_x, payload.value()->offset_y);
+            if (!written) return Result<CommandResult>::failure(
+                written.error().code, written.error().message);
+            result.data = {
+                {"chunk", {coord.x, coord.y}},
+                {"image", written.value().image.string()},
+                {"registration", registration_json(written.value().registration)},
+            };
+            result.text = "Applied chunk shift " + coord_name(coord) + ".";
+            result.text = "Saved chunk placement " + coord_name(coord) + ".";
+            result.changes.changed_placements.push_back(coord);
+            result.changes.project_changed = true;
+            result.project_snapshot = project;
             break;
         }
 
@@ -470,6 +594,18 @@ Result<CommandResult> CommandDispatcher::execute(
             result.text = "Removed chunk image.";
             document.remove_image(payload.value()->coord);
             result.changes.changed_chunks.push_back(payload.value()->coord);
+            result.changes.changed_placements.push_back(payload.value()->coord);
+            for (const SeamKey key : {
+                     SeamKey{payload.value()->coord, SeamDirection::Right},
+                     SeamKey{payload.value()->coord, SeamDirection::Bottom},
+                     SeamKey{{payload.value()->coord.x - 1, payload.value()->coord.y},
+                             SeamDirection::Right},
+                     SeamKey{{payload.value()->coord.x, payload.value()->coord.y - 1},
+                             SeamDirection::Bottom}}) {
+                result.changes.changed_seams.push_back(key);
+            }
+            result.project_snapshot = project;
+            result.changes.project_changed = true;
             break;
         }
 
@@ -493,8 +629,17 @@ Result<CommandResult> CommandDispatcher::execute(
             auto second_image = document.image(second);
             if (!second_image) return Result<CommandResult>::failure(
                 second_image.error().code, second_image.error().message);
+            auto placed_first = LayoutRenderer::render_placed_chunk(
+                *first_image.value(), project.config,
+                document.placement(payload.value()->coord));
+            auto placed_second = LayoutRenderer::render_placed_chunk(
+                *second_image.value(), project.config, document.placement(second));
+            if (!placed_first || !placed_second) {
+                const auto& error = !placed_first ? placed_first.error() : placed_second.error();
+                return Result<CommandResult>::failure(error.code, error.message);
+            }
             auto analysis = SeamAnalyzer::analyze(
-                *first_image.value(), *second_image.value(), project.config, direction);
+                placed_first.value(), placed_second.value(), project.config, direction);
             if (!analysis) return Result<CommandResult>::failure(
                 analysis.error().code, analysis.error().message);
             const std::string direction_name = direction == SeamDirection::Right ? "right" : "bottom";
@@ -507,6 +652,47 @@ Result<CommandResult> CommandDispatcher::execute(
             result.text = "Seam MAE: " +
                           std::to_string(analysis.value().mean_absolute_rgb_difference);
             result.seam_analysis = analysis.take_value();
+            break;
+        }
+
+        case CommandType::SeamSet: {
+            auto payload = require_payload<SeamSetPayload>(request);
+            if (!payload) return Result<CommandResult>::failure(
+                payload.error().code, payload.error().message);
+            const SeamKey key = payload.value()->seam.key;
+            if (!project.config.contains(key.first) ||
+                !project.config.contains(seam_second(key))) {
+                return Result<CommandResult>::failure(
+                    "seam_out_of_range", "Seam pair is outside the project grid.");
+            }
+            if (!document.chunk(key.first).ready ||
+                !document.chunk(seam_second(key)).ready) {
+                return Result<CommandResult>::failure(
+                    "seam_not_ready", "Both chunks must be Ready before editing their seam.");
+            }
+            auto saved = service.set_seam(project, payload.value()->seam);
+            if (!saved) return Result<CommandResult>::failure(
+                saved.error().code, saved.error().message);
+            result.data = {{"first", {key.first.x, key.first.y}},
+                           {"direction", seam_direction_name(key.direction)}};
+            result.text = "Saved seam parameters.";
+            result.changes.changed_seams.push_back(key);
+            result.changes.project_changed = true;
+            result.project_snapshot = project;
+            break;
+        }
+
+        case CommandType::SeamReset: {
+            auto payload = require_payload<SeamResetPayload>(request);
+            if (!payload) return Result<CommandResult>::failure(
+                payload.error().code, payload.error().message);
+            auto reset = service.reset_seam(project, payload.value()->key);
+            if (!reset) return Result<CommandResult>::failure(
+                reset.error().code, reset.error().message);
+            result.text = "Reset seam to the automatic default.";
+            result.changes.changed_seams.push_back(payload.value()->key);
+            result.changes.project_changed = true;
+            result.project_snapshot = project;
             break;
         }
 
