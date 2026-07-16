@@ -3,6 +3,7 @@
 #include "core/result.h"
 #include "image/image_geometry.h"
 #include "model/chunk_coord.h"
+#include "model/layout_state.h"
 #include "model/project_config.h"
 
 #include <optional>
@@ -20,6 +21,8 @@ struct MapGeometry {
 
 Result<MapGeometry> map_geometry(const ProjectConfig& config);
 std::optional<ChunkCoord> topmost_chunk_at(
+    const ProjectConfig& config, double world_x, double world_y);
+std::optional<SeamKey> seam_at(
     const ProjectConfig& config, double world_x, double world_y);
 
 }  // namespace chunkmap

@@ -101,7 +101,8 @@ decode input
 - `draw_map()`：按 `(y, x)` 顺序逐张画 Chunk，Empty 使用 Concept UV；
 - `poll_commands()`：处理异步 import 与 CLI completion，只失效局部 texture；
 - `import_image()`：提交异步 command，不阻塞 frame loop；
-- `refresh_seam()`：把内存 preview 直接上传 texture；
+- `select_seam()` / `draw_seam_inspector()`：加载相邻原图，在 Inspector 编辑折线并与
+  Canvas 共用一份 overlap patch texture；
 - `apply_project_snapshot()`：create/open/reload 时替换 UI snapshot 和 cache。
 
 地图尺寸与 overlap 命中规则在 `src/ui/map_geometry.*`，不需要整张 CPU 或 GPU Composite。

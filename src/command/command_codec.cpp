@@ -54,29 +54,6 @@ ChunkCoord parse_coord(const json& value) {
     return {value.at(0).get<int>(), value.at(1).get<int>()};
 }
 
-json changes_json(const ChangeSet& changes) {
-    json chunks = json::array();
-    for (const auto coord : changes.changed_chunks) chunks.push_back(coord_value(coord));
-    json prompts = json::array();
-    for (const auto coord : changes.changed_prompts) prompts.push_back(coord_value(coord));
-    json contexts = json::array();
-    for (const auto& path : changes.changed_contexts) contexts.push_back(path.string());
-    json placements = json::array();
-    for (const auto coord : changes.changed_placements) placements.push_back(coord_value(coord));
-    json seams = json::array();
-    for (const auto& key : changes.changed_seams) seams.push_back(seam_key_value(key));
-    return {
-        {"project_changed", changes.project_changed},
-        {"concept_changed", changes.concept_changed},
-        {"global_prompt_changed", changes.global_prompt_changed},
-        {"changed_chunks", chunks},
-        {"changed_placements", placements},
-        {"changed_seams", seams},
-        {"changed_prompts", prompts},
-        {"changed_contexts", contexts},
-    };
-}
-
 }  // namespace
 
 json encode_command_request(const CommandRequest& request) {
@@ -270,7 +247,6 @@ json encode_ipc_reply(const CommandRequest& request,
         {"request_id", request.request_id},
         {"result", command_envelope(request, result)},
         {"text", result ? result.value().text : result.error().message},
-        {"changes", result ? changes_json(result.value().changes) : json::object()},
     };
 }
 

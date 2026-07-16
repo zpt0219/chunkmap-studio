@@ -8,11 +8,8 @@
 namespace chunkmap {
 
 struct SeamAnalysis {
-    SeamDirection direction = SeamDirection::Right;
     int overlap_pixels = 0;
     double mean_absolute_rgb_difference = 0.0;
-    ImageBuffer overlap_preview;
-    ImageBuffer difference_preview;
 };
 
 class SeamAnalyzer {

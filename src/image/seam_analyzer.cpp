@@ -23,10 +23,7 @@ Result<SeamAnalysis> SeamAnalyzer::analyze(const ImageBuffer& first,
     const int preview_width = horizontal ? geometry.value().overlap_x : *config.chunk_width;
     const int preview_height = horizontal ? *config.chunk_height : geometry.value().overlap_y;
     SeamAnalysis result;
-    result.direction = direction;
     result.overlap_pixels = horizontal ? geometry.value().overlap_x : geometry.value().overlap_y;
-    result.overlap_preview = ImageBuffer(preview_width, preview_height);
-    result.difference_preview = ImageBuffer(preview_width, preview_height);
 
     std::uint64_t difference_sum = 0;
     std::uint64_t sample_count = 0;
@@ -36,18 +33,11 @@ Result<SeamAnalysis> SeamAnalyzer::analyze(const ImageBuffer& first,
             const int first_y = horizontal ? y : first.height() - preview_height + y;
             const auto* a = first.pixel(first_x, first_y);
             const auto* b = second.pixel(x, y);
-            auto* overlap = result.overlap_preview.pixel(x, y);
-            auto* difference = result.difference_preview.pixel(x, y);
             for (int channel = 0; channel < 3; ++channel) {
                 const int delta = std::abs(static_cast<int>(a[channel]) - static_cast<int>(b[channel]));
                 difference_sum += static_cast<std::uint64_t>(delta);
                 ++sample_count;
-                overlap[channel] = static_cast<std::uint8_t>(
-                    (static_cast<int>(a[channel]) + static_cast<int>(b[channel])) / 2);
-                difference[channel] = static_cast<std::uint8_t>(delta);
             }
-            overlap[3] = 255;
-            difference[3] = 255;
         }
     }
     result.mean_absolute_rgb_difference = sample_count == 0 ? 0.0 :

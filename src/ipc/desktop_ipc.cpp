@@ -188,7 +188,6 @@ nlohmann::json malformed_reply(const std::string& request_id, const Error& error
                     {"command", "ipc"}, {"project", nullptr},
                     {"error", {{"code", error.code}, {"message", error.message}}}}},
         {"text", error.message},
-        {"changes", nlohmann::json::object()},
     };
 }
 

@@ -144,6 +144,26 @@ TEST_CASE("command codec preserves concept slice export payload") {
     CHECK(payload->overwrite);
 }
 
+TEST_CASE("IPC reply omits process-local change notifications") {
+    auto original = request(
+        chunkmap::CommandType::ProjectStatus, "/tmp/work space", "codec-reply", "world");
+    chunkmap::CommandResult result;
+    result.text = "Ready";
+    result.changes.project_changed = true;
+    result.changes.changed_chunks.push_back({1, 2});
+    auto encoded = chunkmap::encode_ipc_reply(
+        original, chunkmap::Result<chunkmap::CommandResult>::success(std::move(result)));
+
+    CHECK(encoded.contains("protocol_version"));
+    CHECK(encoded.contains("request_id"));
+    CHECK(encoded.contains("result"));
+    CHECK(encoded.contains("text"));
+    CHECK_FALSE(encoded.contains("changes"));
+    auto decoded = chunkmap::decode_ipc_reply(encoded);
+    REQUIRE(decoded);
+    CHECK(decoded.value().text == "Ready");
+}
+
 TEST_CASE("first chunk import requests global prompt exactly once") {
     const auto workspace = std::filesystem::temp_directory_path() /
         "chunkmap-global-prompt-action";
@@ -236,8 +256,6 @@ TEST_CASE("chunk alignment preview is read only and save publishes placement onl
     REQUIRE(applied);
     CHECK_FALSE(applied.value().changed_chunk_image);
     CHECK(applied.value().changes.changed_chunks.empty());
-    CHECK(applied.value().changes.changed_placements ==
-          std::vector<chunkmap::ChunkCoord>{{1, 0}});
     REQUIRE(applied.value().project_snapshot);
     CHECK(applied.value().project_snapshot->layout.placement({1, 0}).offset_x == 1);
     CHECK(applied.value().project_snapshot->layout.placement({1, 0}).offset_y == 0);

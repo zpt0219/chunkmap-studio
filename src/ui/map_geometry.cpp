@@ -2,6 +2,8 @@
 
 #include "image/image_pipeline.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 
@@ -50,6 +52,42 @@ std::optional<ChunkCoord> topmost_chunk_at(
         }
     }
     return std::nullopt;
+}
+
+std::optional<SeamKey> seam_at(
+    const ProjectConfig& config, double world_x, double world_y) {
+    auto geometry = map_geometry(config);
+    if (!geometry || world_x < 0.0 || world_y < 0.0 ||
+        world_x >= geometry.value().world_width ||
+        world_y >= geometry.value().world_height) {
+        return std::nullopt;
+    }
+
+    const auto& map = geometry.value();
+    const int column = std::min(config.columns - 1,
+                                static_cast<int>(world_x / map.step_x));
+    const int row = std::min(config.rows - 1,
+                             static_cast<int>(world_y / map.step_y));
+    const int overlap_x = map.chunk_width - map.step_x;
+    const int overlap_y = map.chunk_height - map.step_y;
+    const double vertical_start = static_cast<double>(column * map.step_x);
+    const double horizontal_start = static_cast<double>(row * map.step_y);
+    const bool in_vertical = column > 0 &&
+        world_x < vertical_start + overlap_x;
+    const bool in_horizontal = row > 0 &&
+        world_y < horizontal_start + overlap_y;
+    if (!in_vertical && !in_horizontal) return std::nullopt;
+
+    const double vertical_score = in_vertical
+        ? std::abs(world_x - (vertical_start + overlap_x * 0.5)) / overlap_x
+        : std::numeric_limits<double>::infinity();
+    const double horizontal_score = in_horizontal
+        ? std::abs(world_y - (horizontal_start + overlap_y * 0.5)) / overlap_y
+        : std::numeric_limits<double>::infinity();
+    if (vertical_score <= horizontal_score) {
+        return SeamKey{{column - 1, row}, SeamDirection::Right};
+    }
+    return SeamKey{{column, row - 1}, SeamDirection::Bottom};
 }
 
 }  // namespace chunkmap

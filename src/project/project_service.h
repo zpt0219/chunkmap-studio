@@ -2,7 +2,6 @@
 
 #include "core/result.h"
 #include "image/image_registration.h"
-#include "image/seam_analyzer.h"
 #include "image/image_pipeline.h"
 #include "model/project.h"
 #include "project/project_repository.h"
@@ -128,8 +127,6 @@ public:
     Result<void> set_seam(Project& project, SeamDefinition seam) const;
     Result<void> reset_seam(Project& project, SeamKey key) const;
     Result<void> remove_chunk_image(Project& project, ChunkCoord coord) const;
-    Result<SeamAnalysis> inspect_seam(
-        const Project& project, ChunkCoord coord, SeamDirection direction) const;
 
 private:
     Result<void> validate_config(const ProjectConfig& config) const;

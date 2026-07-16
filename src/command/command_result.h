@@ -1,6 +1,6 @@
 #pragma once
 
-#include "image/seam_analyzer.h"
+#include "image/image_buffer.h"
 #include "model/project.h"
 
 #include <nlohmann/json.hpp>
@@ -25,13 +25,9 @@ struct ProjectKey {
 struct ChangeSet {
     std::optional<ProjectKey> project;
     bool project_changed = false;
-    bool concept_changed = false;
     bool global_prompt_changed = false;
     std::vector<ChunkCoord> changed_chunks;
-    std::vector<ChunkCoord> changed_placements;
-    std::vector<SeamKey> changed_seams;
     std::vector<ChunkCoord> changed_prompts;
-    std::vector<std::filesystem::path> changed_contexts;
 };
 
 struct CommandResult {
@@ -39,7 +35,6 @@ struct CommandResult {
     std::string text;
     ChangeSet changes;
     std::optional<Project> project_snapshot;
-    std::optional<SeamAnalysis> seam_analysis;
     std::shared_ptr<const ImageBuffer> changed_chunk_image;
     std::shared_ptr<const ImageBuffer> alignment_preview_image;
 };

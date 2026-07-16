@@ -938,26 +938,4 @@ Result<void> ProjectService::remove_chunk_image(Project& project, ChunkCoord coo
     return Result<void>::success();
 }
 
-Result<SeamAnalysis> ProjectService::inspect_seam(
-    const Project& project, ChunkCoord coord, SeamDirection direction) const {
-    auto coord_result = validate_coord(project, coord);
-    if (!coord_result) return Result<SeamAnalysis>::failure(
-        coord_result.error().code, coord_result.error().message);
-    const ChunkCoord second = direction == SeamDirection::Right
-        ? ChunkCoord{coord.x + 1, coord.y} : ChunkCoord{coord.x, coord.y + 1};
-    if (!project.config.contains(second)) {
-        return Result<SeamAnalysis>::failure("seam_out_of_range", "Seam neighbor is outside the grid.");
-    }
-    auto first_image = ImageBuffer::load(project.paths.chunk_image(coord));
-    auto second_image = ImageBuffer::load(project.paths.chunk_image(second));
-    if (!first_image || !second_image) {
-        return Result<SeamAnalysis>::failure(
-            "seam_not_ready", "Both chunks must be Ready before inspecting their seam.");
-    }
-    auto analysis = SeamAnalyzer::analyze(
-        first_image.value(), second_image.value(), project.config, direction);
-    if (!analysis) return analysis;
-    return analysis;
-}
-
 }  // namespace chunkmap

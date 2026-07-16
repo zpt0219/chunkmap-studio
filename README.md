@@ -156,8 +156,11 @@ On macOS, open a project directly from the command line:
 ```
 
 The Desktop app supports project creation/opening, a zoomable and pannable map,
-chunk selection, Empty/Ready review, automatic Prompt writes, and seam
-inspection. UI and CLI writes share one FIFO `DocumentCommandQueue`; completed
+chunk selection, Empty/Ready review, automatic Prompt writes, and editable seams.
+Hover anywhere in the overlap band between two Ready chunks to highlight that Seam;
+click anywhere in the band to switch the Inspector from Chunk/Prompt content to
+the Seam Editor. Clicking a regular Chunk switches the Inspector back.
+UI and CLI writes share one FIFO `DocumentCommandQueue`; completed
 CLI commands refresh the app through `ChangeSet`, without file polling. Image
 generation remains outside the app and can use either Codex with the CLI or a
 manually operated external image generator.
@@ -206,8 +209,9 @@ white for generation and black only for the outermost 1px neighbor anchor edge.
 Generate in Stable Diffusion, ComfyUI,
 or another external tool, then use the same `Import Image` or `Replace Image`
 action used for map anchors. User imports remain byte-faithful after dimension
-validation. Alignment stores a non-destructive placement; Seam Editor stores an
-editable polyline boundary and feather width while previewing only the overlap band.
+validation. The Inspector's Seam Editor stores an editable polyline boundary and
+feather width while previewing only the overlap band. Alignment remains in the
+Chunk Inspector and stores a non-destructive placement.
 
 Export the Concept Map and region crops for prompt planning:
 

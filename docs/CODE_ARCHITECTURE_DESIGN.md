@@ -156,8 +156,8 @@ Concept region，写入用户选择的项目外 PNG，不创建整套 regions，
 
 Seam 是独立排版层：canonical right/bottom pair 保存可编辑折线和 feather width。Core
 仅为 overlap 尺寸生成小 patch；Canvas 和 Full Map Export 使用相同 renderer 与固定的
-right-then-bottom 顺序。Seam Inspect 按请求读取 placement 后的两张图并在内存返回 metrics、
-overlap preview 与 difference preview。
+right-then-bottom 顺序。Seam Inspect 按请求读取 placement 后的两张图，只返回 overlap
+像素数与 mean RGB difference，不再构造无人消费的 preview 图片。
 
 ## 7. Desktop 渲染
 
@@ -176,15 +176,20 @@ Map Canvas 根据 overlap geometry 与 placement UV 逐张绘制原始 Ready tex
 - 只失效发生变化的 texture；
 - Reload/切换项目清空旧 texture cache。
 
-Desktop Import 使用异步 command completion，不阻塞 frame loop。Seam preview 也直接从
-内存 `ImageBuffer` 上传临时 texture。
+Desktop Import 使用异步 command completion，不阻塞 frame loop。Seam Editor 直接从
+内存 `ImageBuffer` 重算 overlap patch，并更新 Canvas 与 Inspector 共用的一份 Seam texture；
+退出编辑后立即释放两张编辑源图，未修改时不做无意义的 patch 重建。
 
 Ready Chunk 的 Alignment 控件使用 `ChunkAlignmentPreview` 在内存生成手动或 Auto 平移
 预览，Canvas 与 Inspector 共用临时 texture；`ChunkShiftApply` 只保存 placement JSON。
 切换 Chunk、项目、Reload 或 App 失焦会丢弃瞬时预览；保存后的 offset 会随项目重载。
 
-Seam Editor 是 modeless window，只解码两张相邻原图并重算 overlap patch。折线控制点可
-拖动、添加、删除，feather width 可实时调整；Save 只写 Seam JSON，Cancel 恢复已保存参数。
+Inspector 根据当前选中对象显示 Chunk/Prompt 或 Seam Editor。地图上两张 Ready Chunk 的
+整个 overlap band 都属于对应 Seam 的命中区域，悬停时高亮完整重叠带，点击后 Inspector
+直接切换到该 Seam；点击普通 Chunk 则切回 Chunk/Prompt。水平与垂直重叠带交叉时，选择
+离重叠带中心相对更近的一条。Seam Editor 只解码两张相邻原图并重算 overlap patch；折线
+控制点可拖动、添加、删除，feather width 可实时调整；Save 只写 Seam JSON，Cancel 恢复
+已保存参数并切回 Chunk Inspector。
 
 Auto 的 Core 边界分为 Low-resolution 2D、Projection、共同精修/选优三部分。两个算法都运行，
 共同 score 选择默认结果；Panel 保留两组瞬时诊断并允许切换预览，不把算法选择写入项目。

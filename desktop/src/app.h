@@ -36,8 +36,7 @@ private:
     void draw_log_panel();
     void draw_chunk_tab();
     void draw_prompt_tab();
-    void draw_seam_tab();
-    void draw_seam_editor();
+    void draw_seam_inspector();
     void draw_new_project_modal();
     void draw_project_settings_modal();
     void draw_change_grid_modal();
@@ -62,8 +61,8 @@ private:
     void export_full_map();
     void export_concept_slice();
     void export_generation_context();
-    void refresh_seam();
-    void open_seam_editor();
+    void select_seam(chunkmap::SeamKey key);
+    void close_seam_inspector();
     void refresh_seam_editor_preview();
     void rebuild_seam_textures(
         std::optional<chunkmap::ChunkCoord> placement_preview = std::nullopt,
@@ -120,23 +119,13 @@ private:
     float new_overlap_x_ = 0.15F;
     float new_overlap_y_ = 0.15F;
 
-    int seam_direction_ = 0;
-    int seam_mode_ = 0;
-    std::optional<chunkmap::SeamAnalysis> seam_analysis_;
-    GlTexture seam_overlap_texture_;
-    GlTexture seam_difference_texture_;
-    chunkmap::ChunkCoord seam_first_{};
-    chunkmap::ChunkCoord seam_second_{};
-    chunkmap::SeamDirection seam_core_direction_ = chunkmap::SeamDirection::Right;
     std::unordered_map<chunkmap::SeamKey, std::unique_ptr<GlTexture>,
                        chunkmap::SeamKeyHash> seam_textures_;
     std::unordered_map<chunkmap::ChunkCoord, chunkmap::ImageBuffer,
                        chunkmap::ChunkCoordHash> seam_preview_sources_;
-    bool show_seam_editor_ = false;
-    chunkmap::SeamDefinition seam_editor_value_;
-    std::optional<chunkmap::ImageBuffer> seam_editor_first_image_;
-    std::optional<chunkmap::ImageBuffer> seam_editor_second_image_;
-    GlTexture seam_editor_texture_;
+    std::optional<chunkmap::SeamDefinition> seam_editor_value_;
+    chunkmap::ImageBuffer seam_editor_first_image_;
+    chunkmap::ImageBuffer seam_editor_second_image_;
     int seam_editor_active_point_ = -1;
     bool seam_editor_dirty_ = false;
 

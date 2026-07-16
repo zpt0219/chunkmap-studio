@@ -3,6 +3,7 @@
 #include "image/image_buffer.h"
 #include "image/full_map_exporter.h"
 #include "image/layout_renderer.h"
+#include "image/seam_analyzer.h"
 #include "io/atomic_file.h"
 #include "project/project_service.h"
 
@@ -177,7 +178,6 @@ Result<CommandResult> CommandDispatcher::execute(
                           project.paths.root().string();
             result.project_snapshot = project;
             result.changes.project_changed = true;
-            result.changes.concept_changed = true;
             set_project_change(result, request, create.name);
             active_project_ = result.changes.project;
             return Result<CommandResult>::success(std::move(result));
@@ -276,8 +276,6 @@ Result<CommandResult> CommandDispatcher::execute(
             };
             result.text = "Exported concept context to " +
                           context.value().manifest.parent_path().string();
-            result.changes.changed_contexts.push_back(
-                context.value().manifest.parent_path());
             break;
         }
 
@@ -404,8 +402,6 @@ Result<CommandResult> CommandDispatcher::execute(
             };
             result.text = "Exported chunk context to " +
                           context.value().manifest.parent_path().string();
-            result.changes.changed_contexts.push_back(
-                context.value().manifest.parent_path());
             break;
         }
 
@@ -469,7 +465,6 @@ Result<CommandResult> CommandDispatcher::execute(
             }
             result.changes.changed_chunks.push_back(payload.value()->coord);
             if (request.type == CommandType::ChunkWrite) {
-                result.changes.changed_placements.push_back(payload.value()->coord);
                 result.project_snapshot = project;
                 result.changes.project_changed = true;
             }
@@ -558,7 +553,6 @@ Result<CommandResult> CommandDispatcher::execute(
             };
             result.text = "Applied chunk shift " + coord_name(coord) + ".";
             result.text = "Saved chunk placement " + coord_name(coord) + ".";
-            result.changes.changed_placements.push_back(coord);
             result.changes.project_changed = true;
             result.project_snapshot = project;
             break;
@@ -594,16 +588,6 @@ Result<CommandResult> CommandDispatcher::execute(
             result.text = "Removed chunk image.";
             document.remove_image(payload.value()->coord);
             result.changes.changed_chunks.push_back(payload.value()->coord);
-            result.changes.changed_placements.push_back(payload.value()->coord);
-            for (const SeamKey key : {
-                     SeamKey{payload.value()->coord, SeamDirection::Right},
-                     SeamKey{payload.value()->coord, SeamDirection::Bottom},
-                     SeamKey{{payload.value()->coord.x - 1, payload.value()->coord.y},
-                             SeamDirection::Right},
-                     SeamKey{{payload.value()->coord.x, payload.value()->coord.y - 1},
-                             SeamDirection::Bottom}}) {
-                result.changes.changed_seams.push_back(key);
-            }
             result.project_snapshot = project;
             result.changes.project_changed = true;
             break;
@@ -651,7 +635,6 @@ Result<CommandResult> CommandDispatcher::execute(
             };
             result.text = "Seam MAE: " +
                           std::to_string(analysis.value().mean_absolute_rgb_difference);
-            result.seam_analysis = analysis.take_value();
             break;
         }
 
@@ -676,7 +659,6 @@ Result<CommandResult> CommandDispatcher::execute(
             result.data = {{"first", {key.first.x, key.first.y}},
                            {"direction", seam_direction_name(key.direction)}};
             result.text = "Saved seam parameters.";
-            result.changes.changed_seams.push_back(key);
             result.changes.project_changed = true;
             result.project_snapshot = project;
             break;
@@ -690,7 +672,6 @@ Result<CommandResult> CommandDispatcher::execute(
             if (!reset) return Result<CommandResult>::failure(
                 reset.error().code, reset.error().message);
             result.text = "Reset seam to the automatic default.";
-            result.changes.changed_seams.push_back(payload.value()->key);
             result.changes.project_changed = true;
             result.project_snapshot = project;
             break;

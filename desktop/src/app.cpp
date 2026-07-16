@@ -66,6 +66,21 @@ bool path_is_regular_file(const std::filesystem::path& path) {
     return std::filesystem::is_regular_file(path, error) && !error;
 }
 
+bool same_seam(const chunkmap::SeamDefinition& first,
+               const chunkmap::SeamDefinition& second) {
+    if (!(first.key == second.key) || first.feather_width != second.feather_width ||
+        first.points.size() != second.points.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < first.points.size(); ++index) {
+        if (first.points[index].along != second.points[index].along ||
+            first.points[index].across != second.points[index].across) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void reveal_file(const std::filesystem::path& path) {
 #if defined(__APPLE__)
     const pid_t process = fork();
@@ -114,7 +129,6 @@ void App::draw() {
     if (show_map_controls_) draw_map_controls();
     draw_map();
     if (show_inspector_) draw_inspector();
-    if (show_seam_editor_) draw_seam_editor();
     if (show_log_) draw_log_panel();
     draw_new_project_modal();
     draw_project_settings_modal();
@@ -393,6 +407,17 @@ void App::draw_map() {
         return ImVec2(origin.x + (x - map_view_.pan_x()) * map_view_.scale(),
                       origin.y + (y - map_view_.pan_y()) * map_view_.scale());
     };
+    std::optional<chunkmap::SeamKey> hovered_seam;
+    if (hovered && detailed && show_overlays_ &&
+        !ImGui::IsMouseDown(ImGuiMouseButton_Right) &&
+        !ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const auto world = map_view_.screen_to_world(mouse.x - origin.x, mouse.y - origin.y);
+        auto hit = chunkmap::seam_at(project_->config, world.x, world.y);
+        if (hit && chunk_ready(hit->first) && chunk_ready(chunkmap::seam_second(*hit))) {
+            hovered_seam = *hit;
+        }
+    }
 
     const auto comparison_mode = concept_comparison_.visible_mode(
         ImGui::IsMouseDown(ImGuiMouseButton_Left));
@@ -514,6 +539,10 @@ void App::draw_map() {
         }
     }
     if (show_overlays_ && detailed) {
+        std::optional<chunkmap::SeamKey> emphasized_seam = hovered_seam;
+        if (!emphasized_seam && seam_editor_value_) {
+            emphasized_seam = seam_editor_value_->key;
+        }
         for (int x = 1; x < project_->config.columns; ++x) {
             const float screen_x = to_screen(static_cast<float>(x * step_x), 0).x;
             draw->AddLine(ImVec2(screen_x, to_screen(0, 0).y),
@@ -525,6 +554,27 @@ void App::draw_map() {
             draw->AddLine(ImVec2(to_screen(0, 0).x, screen_y),
                           ImVec2(to_screen(static_cast<float>(world_width), 0).x, screen_y),
                           IM_COL32(239, 180, 70, 130), 1.0F);
+        }
+        if (emphasized_seam) {
+            const auto key = *emphasized_seam;
+            if (key.direction == chunkmap::SeamDirection::Right) {
+                const float left = static_cast<float>((key.first.x + 1) * step_x);
+                const float top = static_cast<float>(key.first.y * step_y);
+                const ImVec2 band_min = to_screen(left, top);
+                const ImVec2 band_max = to_screen(
+                    left + chunk_width - step_x, top + chunk_height);
+                draw->AddRectFilled(band_min, band_max, IM_COL32(255, 198, 75, 38));
+                draw->AddRect(band_min, band_max, IM_COL32(255, 198, 75, 255), 0.0F, 0, 2.0F);
+            } else {
+                const float left = static_cast<float>(key.first.x * step_x);
+                const float top = static_cast<float>((key.first.y + 1) * step_y);
+                const ImVec2 band_min = to_screen(left, top);
+                const ImVec2 band_max = to_screen(
+                    left + chunk_width, top + chunk_height - step_y);
+                draw->AddRectFilled(band_min, band_max, IM_COL32(255, 198, 75, 38));
+                draw->AddRect(band_min, band_max, IM_COL32(255, 198, 75, 255), 0.0F, 0, 2.0F);
+            }
+            if (hovered_seam) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         }
     }
     if (selected_) {
@@ -549,21 +599,26 @@ void App::draw_map() {
             ImGui::GetIO().MouseWheel, mouse.x - origin.x, mouse.y - origin.y);
     }
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        const ImVec2 mouse = ImGui::GetIO().MousePos;
-        const auto world = map_view_.screen_to_world(mouse.x - origin.x, mouse.y - origin.y);
-        const double world_x = world.x;
-        const double world_y = world.y;
-        std::optional<chunkmap::ChunkCoord> hit;
-        if (detailed) {
-            hit = chunkmap::topmost_chunk_at(project_->config, world_x, world_y);
-        } else if (world_x >= 0 && world_y >= 0 && world_x < world_width && world_y < world_height) {
-            hit = chunkmap::ChunkCoord{
-                std::min(project_->config.columns - 1, static_cast<int>(world_x / step_x)),
-                std::min(project_->config.rows - 1, static_cast<int>(world_y / step_y))};
-        }
-        if (hit) {
-            select_chunk(*hit);
-            if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) focus_selected(available);
+        if (hovered_seam) {
+            select_seam(*hovered_seam);
+        } else {
+            const ImVec2 mouse = ImGui::GetIO().MousePos;
+            const auto world = map_view_.screen_to_world(mouse.x - origin.x, mouse.y - origin.y);
+            const double world_x = world.x;
+            const double world_y = world.y;
+            std::optional<chunkmap::ChunkCoord> hit;
+            if (detailed) {
+                hit = chunkmap::topmost_chunk_at(project_->config, world_x, world_y);
+            } else if (world_x >= 0 && world_y >= 0 &&
+                       world_x < world_width && world_y < world_height) {
+                hit = chunkmap::ChunkCoord{
+                    std::min(project_->config.columns - 1, static_cast<int>(world_x / step_x)),
+                    std::min(project_->config.rows - 1, static_cast<int>(world_y / step_y))};
+            }
+            if (hit) {
+                select_chunk(*hit);
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) focus_selected(available);
+            }
         }
     }
     if (hovered && ImGui::IsKeyPressed(ImGuiKey_F)) focus_selected(available);
@@ -576,6 +631,12 @@ void App::draw_inspector() {
     if (!project_) {
         concept_comparison_.cancel();
         ImGui::TextDisabled("No project open");
+        ImGui::End();
+        return;
+    }
+    if (seam_editor_value_) {
+        concept_comparison_.cancel();
+        draw_seam_inspector();
         ImGui::End();
         return;
     }
@@ -598,13 +659,6 @@ void App::draw_inspector() {
             draw_prompt_tab();
             ImGui::EndTabItem();
         }
-        const bool seam_available = chunk_ready(*selected_) && ready_neighbor_count(*selected_) > 0;
-        ImGui::BeginDisabled(!seam_available);
-        if (ImGui::BeginTabItem("Seam")) {
-            draw_seam_tab();
-            ImGui::EndTabItem();
-        }
-        ImGui::EndDisabled();
         ImGui::EndTabBar();
     }
     if (!chunk_tab_visible) {
@@ -931,69 +985,6 @@ void App::draw_prompt_tab() {
     }
 }
 
-void App::draw_seam_tab() {
-    const char* directions[] = {"Top", "Right", "Bottom", "Left"};
-    bool available[4] = {
-        selected_->y > 0 && chunk_ready({selected_->x, selected_->y - 1}),
-        selected_->x + 1 < project_->config.columns && chunk_ready({selected_->x + 1, selected_->y}),
-        selected_->y + 1 < project_->config.rows && chunk_ready({selected_->x, selected_->y + 1}),
-        selected_->x > 0 && chunk_ready({selected_->x - 1, selected_->y})};
-    if (!available[seam_direction_]) {
-        for (int index = 0; index < 4; ++index) {
-            if (available[index]) {
-                seam_direction_ = index;
-                seam_analysis_.reset();
-                break;
-            }
-        }
-    }
-    ImGui::SetNextItemWidth(-1.0F);
-    if (ImGui::BeginCombo("##seam_direction", directions[seam_direction_])) {
-        for (int index = 0; index < 4; ++index) {
-            if (!available[index]) continue;
-            if (ImGui::Selectable(directions[index], seam_direction_ == index)) {
-                seam_direction_ = index;
-                seam_analysis_.reset();
-            }
-        }
-        ImGui::EndCombo();
-    }
-    const char* modes[] = {"Raw", "Difference", "Overlap"};
-    seam_mode_ = std::clamp(seam_mode_, 0, 2);
-    for (int index = 0; index < 3; ++index) {
-        if (index > 0) ImGui::SameLine();
-        ImGui::RadioButton(modes[index], &seam_mode_, index);
-    }
-    if (!seam_analysis_) refresh_seam();
-    if (!seam_analysis_) {
-        ImGui::TextColored(ImVec4(0.95F, 0.42F, 0.38F, 1.0F), "%s", error_message_.c_str());
-        return;
-    }
-    ImGui::Separator();
-    ImGui::Text("Overlap  %d px", seam_analysis_->overlap_pixels);
-    ImGui::Text("Mean RGB difference  %.2f", seam_analysis_->mean_absolute_rgb_difference);
-    ImGui::Spacing();
-
-    const float width = std::max(1.0F, ImGui::GetContentRegionAvail().x);
-    if (seam_mode_ == 0) {
-        GlTexture* first = textures_.get(project_->paths.chunk_image(seam_first_));
-        GlTexture* second = textures_.get(project_->paths.chunk_image(seam_second_));
-        if (first && second) {
-            const float half = (width - ImGui::GetStyle().ItemSpacing.x) * 0.5F;
-            ImGui::Image(texture_id(*first), ImVec2(half, half * first->height() / first->width()));
-            ImGui::SameLine();
-            ImGui::Image(texture_id(*second), ImVec2(half, half * second->height() / second->width()));
-        }
-    } else {
-        GlTexture& texture = seam_mode_ == 1 ? seam_difference_texture_ : seam_overlap_texture_;
-        if (texture.id() != 0) {
-            ImGui::Image(texture_id(texture), ImVec2(width, width * texture.height() / texture.width()));
-        }
-    }
-    ImGui::Spacing();
-    if (ImGui::Button("Edit Seam...")) open_seam_editor();
-}
-
 void App::draw_new_project_modal() {
     if (show_new_project_) ImGui::OpenPopup("New Project");
     bool open = show_new_project_;
@@ -1234,10 +1225,12 @@ void App::apply_project_snapshot(chunkmap::Project project, bool reset_selection
     prompt_dirty_ = false;
     global_prompt_buffer_.clear();
     global_prompt_dirty_ = false;
-    seam_analysis_.reset();
     seam_textures_.clear();
     seam_preview_sources_.clear();
-    show_seam_editor_ = false;
+    seam_editor_value_.reset();
+    seam_editor_first_image_ = {};
+    seam_editor_second_image_ = {};
+    seam_editor_dirty_ = false;
     last_export_path_.reset();
     textures_.clear();
     rebuild_seam_textures();
@@ -1268,7 +1261,13 @@ void App::reload_project() {
 }
 
 void App::select_chunk(chunkmap::ChunkCoord coord) {
-    if (!project_ || !project_->config.contains(coord) || selected_ == coord) return;
+    if (!project_ || !project_->config.contains(coord)) return;
+    if (seam_editor_value_ && seam_editor_dirty_) {
+        status_message_ = "Save or cancel the current Seam before selecting a Chunk";
+        return;
+    }
+    if (seam_editor_value_) close_seam_inspector();
+    if (selected_ == coord) return;
     flush_prompt();
     concept_comparison_.cancel();
     reset_alignment_preview();
@@ -1282,7 +1281,6 @@ void App::select_chunk(chunkmap::ChunkCoord coord) {
     auto prompt = command_host_.submit_and_wait(std::move(request));
     prompt_buffer_ = prompt ? prompt.value().data.value("prompt", std::string{}) : std::string{};
     prompt_dirty_ = false;
-    seam_analysis_.reset();
     if (!prompt) error_message_ = prompt.error().message;
 }
 
@@ -1559,41 +1557,6 @@ void App::export_generation_context() {
     error_message_.clear();
 }
 
-void App::refresh_seam() {
-    if (!project_ || !selected_) return;
-    seam_first_ = *selected_;
-    seam_second_ = *selected_;
-    if (seam_direction_ == 0) {
-        seam_first_.y -= 1;
-        seam_core_direction_ = chunkmap::SeamDirection::Bottom;
-    } else if (seam_direction_ == 1) {
-        seam_second_.x += 1;
-        seam_core_direction_ = chunkmap::SeamDirection::Right;
-    } else if (seam_direction_ == 2) {
-        seam_second_.y += 1;
-        seam_core_direction_ = chunkmap::SeamDirection::Bottom;
-    } else {
-        seam_first_.x -= 1;
-        seam_core_direction_ = chunkmap::SeamDirection::Right;
-    }
-    if (seam_direction_ == 0 || seam_direction_ == 3) seam_second_ = *selected_;
-    auto request = make_request(chunkmap::CommandType::SeamInspect);
-    request.payload = chunkmap::SeamInspectPayload{
-        seam_first_, seam_core_direction_ == chunkmap::SeamDirection::Right
-            ? chunkmap::CommandSeamDirection::Right
-            : chunkmap::CommandSeamDirection::Bottom};
-    auto result = command_host_.submit_and_wait(std::move(request));
-    if (result && result.value().seam_analysis) {
-        seam_analysis_ = *result.value().seam_analysis;
-        seam_overlap_texture_.load(seam_analysis_->overlap_preview);
-        seam_difference_texture_.load(seam_analysis_->difference_preview);
-        error_message_.clear();
-    } else {
-        seam_analysis_.reset();
-        error_message_ = result ? "Seam command returned no analysis." : result.error().message;
-    }
-}
-
 void App::rebuild_seam_textures(
     std::optional<chunkmap::ChunkCoord> placement_preview,
     chunkmap::ChunkPlacement preview_value) {
@@ -1647,68 +1610,99 @@ void App::rebuild_seam_textures(
     }
 }
 
-void App::open_seam_editor() {
-    if (!project_ || !seam_analysis_) return;
-    const chunkmap::SeamKey key{seam_first_, seam_core_direction_};
+void App::select_seam(chunkmap::SeamKey key) {
+    if (!project_ || !project_->config.contains(key.first) ||
+        !project_->config.contains(chunkmap::seam_second(key)) ||
+        !chunk_ready(key.first) || !chunk_ready(chunkmap::seam_second(key))) {
+        return;
+    }
+    if (seam_editor_value_ && seam_editor_value_->key == key) return;
+    if (seam_editor_value_ && seam_editor_dirty_) {
+        status_message_ = "Save or cancel the current Seam before opening another";
+        return;
+    }
+    flush_prompt();
+    flush_global_prompt();
+    concept_comparison_.cancel();
+    reset_alignment_preview();
+    if (seam_editor_value_) {
+        close_seam_inspector();
+    } else {
+        seam_preview_sources_.clear();
+    }
     const auto found = project_->layout.seams.find(key);
-    seam_editor_value_ = found == project_->layout.seams.end()
+    auto editor_value = found == project_->layout.seams.end()
         ? chunkmap::LayoutRenderer::default_seam(project_->config, key)
         : found->second;
-    seam_editor_active_point_ = -1;
-    seam_editor_dirty_ = false;
-    show_seam_editor_ = true;
     auto first_image = chunkmap::ImageBuffer::load(project_->paths.chunk_image(key.first));
     auto second_image = chunkmap::ImageBuffer::load(
         project_->paths.chunk_image(chunkmap::seam_second(key)));
     if (!first_image || !second_image) {
-        show_seam_editor_ = false;
         error_message_ = !first_image ? first_image.error().message : second_image.error().message;
         return;
     }
     seam_editor_first_image_ = first_image.take_value();
     seam_editor_second_image_ = second_image.take_value();
+    seam_editor_value_ = std::move(editor_value);
+    seam_editor_active_point_ = -1;
+    seam_editor_dirty_ = false;
+    show_inspector_ = true;
     refresh_seam_editor_preview();
+    status_message_ = "Editing Seam " + coord_label(key.first) + " -> " +
+                      coord_label(chunkmap::seam_second(key));
+    error_message_.clear();
+}
+
+void App::close_seam_inspector() {
+    if (!seam_editor_value_) return;
+    const auto key = seam_editor_value_->key;
+    const bool restore_saved_seam = seam_editor_dirty_;
+    seam_editor_value_.reset();
+    seam_editor_dirty_ = false;
+    seam_editor_active_point_ = -1;
+    seam_editor_first_image_ = {};
+    seam_editor_second_image_ = {};
+    seam_preview_sources_.clear();
+    if (project_ && restore_saved_seam) {
+        rebuild_seam_textures(key.first, project_->layout.placement(key.first));
+    }
 }
 
 void App::refresh_seam_editor_preview() {
-    if (!project_ || !show_seam_editor_) return;
-    const auto key = seam_editor_value_.key;
+    if (!project_ || !seam_editor_value_ || seam_editor_first_image_.empty() ||
+        seam_editor_second_image_.empty()) {
+        return;
+    }
+    const auto key = seam_editor_value_->key;
     const auto second = chunkmap::seam_second(key);
-    if (!seam_editor_first_image_ || !seam_editor_second_image_) return;
     auto patch = chunkmap::LayoutRenderer::render_seam_patch(
-        *seam_editor_first_image_, *seam_editor_second_image_, project_->config,
+        seam_editor_first_image_, seam_editor_second_image_, project_->config,
         project_->layout.placement(key.first), project_->layout.placement(second),
-        seam_editor_value_);
+        *seam_editor_value_);
     if (!patch) {
         error_message_ = patch.error().message;
         return;
     }
-    seam_editor_texture_.load(patch.value());
-    auto live_texture = std::make_unique<GlTexture>();
-    if (live_texture->load(patch.value())) {
-        seam_textures_[key] = std::move(live_texture);
+    auto texture = std::make_unique<GlTexture>();
+    if (texture->load(patch.value())) {
+        seam_textures_[key] = std::move(texture);
     }
 }
 
-void App::draw_seam_editor() {
-    if (!project_) {
-        show_seam_editor_ = false;
-        return;
-    }
-    bool open = show_seam_editor_;
-    ImGui::SetNextWindowSize(ImVec2(760.0F, 620.0F), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Seam Editor", &open)) {
-        ImGui::End();
-        if (!open) {
-            show_seam_editor_ = false;
-            rebuild_seam_textures(
-                seam_editor_value_.key.first,
-                project_->layout.placement(seam_editor_value_.key.first));
-        }
-        return;
-    }
-    const auto key = seam_editor_value_.key;
+void App::draw_seam_inspector() {
+    if (!project_ || !seam_editor_value_) return;
+    auto& seam = *seam_editor_value_;
+    const auto key = seam.key;
     const auto second = chunkmap::seam_second(key);
+    const auto update_dirty = [&]() {
+        const auto found = project_->layout.seams.find(key);
+        const auto saved = found == project_->layout.seams.end()
+            ? chunkmap::LayoutRenderer::default_seam(project_->config, key)
+            : found->second;
+        seam_editor_dirty_ = !same_seam(seam, saved);
+    };
+    ImGui::TextUnformatted("Seam");
+    ImGui::SameLine();
     ImGui::Text("%s  ->  %s", coord_label(key.first).c_str(), coord_label(second).c_str());
     ImGui::SameLine();
     ImGui::TextDisabled("%s overlap only", chunkmap::seam_direction_name(key.direction));
@@ -1720,23 +1714,28 @@ void App::draw_seam_editor() {
         ? (key.direction == chunkmap::SeamDirection::Right
                ? geometry.value().overlap_x : geometry.value().overlap_y)
         : 0;
-    int feather = seam_editor_value_.feather_width;
+    int feather = seam.feather_width;
     ImGui::SetNextItemWidth(240.0F);
     if (ImGui::SliderInt("Feather width", &feather, 0, std::max(0, overlap), "%d px")) {
-        seam_editor_value_.feather_width = feather;
-        seam_editor_dirty_ = true;
+        seam.feather_width = feather;
+        update_dirty();
         refresh_seam_editor_preview();
     }
     ImGui::SameLine();
     if (ImGui::Button("Auto Boundary")) {
-        seam_editor_value_ = chunkmap::LayoutRenderer::default_seam(project_->config, key);
-        seam_editor_dirty_ = true;
+        seam = chunkmap::LayoutRenderer::default_seam(project_->config, key);
+        update_dirty();
         refresh_seam_editor_preview();
     }
 
+    const auto texture_found = seam_textures_.find(key);
+    const GlTexture* seam_texture = texture_found != seam_textures_.end()
+        ? texture_found->second.get() : nullptr;
     const ImVec2 available = ImGui::GetContentRegionAvail();
-    const float source_width = static_cast<float>(std::max(1, seam_editor_texture_.width()));
-    const float source_height = static_cast<float>(std::max(1, seam_editor_texture_.height()));
+    const float source_width = static_cast<float>(std::max(
+        1, seam_texture ? seam_texture->width() : 0));
+    const float source_height = static_cast<float>(std::max(
+        1, seam_texture ? seam_texture->height() : 0));
     const float scale = std::min(
         std::max(1.0F, available.x) / source_width,
         std::max(180.0F, available.y - 64.0F) / source_height);
@@ -1750,8 +1749,8 @@ void App::draw_seam_editor() {
     const ImVec2 canvas_max = ImGui::GetItemRectMax();
     ImDrawList* draw = ImGui::GetWindowDrawList();
     draw->AddRectFilled(canvas_min, canvas_max, IM_COL32(18, 20, 23, 255));
-    if (seam_editor_texture_.id() != 0) {
-        draw->AddImage(texture_id(seam_editor_texture_), canvas_min, canvas_max);
+    if (seam_texture && seam_texture->id() != 0) {
+        draw->AddImage(texture_id(*seam_texture), canvas_min, canvas_max);
     }
     const bool right = key.direction == chunkmap::SeamDirection::Right;
     const auto point_position = [&](const chunkmap::SeamPoint& point) {
@@ -1762,12 +1761,12 @@ void App::draw_seam_editor() {
                      canvas_min.y + static_cast<float>(point.across) * canvas_size.y);
     };
     const ImU32 boundary_color = IM_COL32(247, 184, 69, 255);
-    for (std::size_t index = 1; index < seam_editor_value_.points.size(); ++index) {
-        draw->AddLine(point_position(seam_editor_value_.points[index - 1]),
-                      point_position(seam_editor_value_.points[index]),
+    for (std::size_t index = 1; index < seam.points.size(); ++index) {
+        draw->AddLine(point_position(seam.points[index - 1]),
+                      point_position(seam.points[index]),
                       boundary_color, 2.5F);
     }
-    for (const auto& point : seam_editor_value_.points) {
+    for (const auto& point : seam.points) {
         draw->AddCircleFilled(point_position(point), 5.5F, boundary_color);
         draw->AddCircle(point_position(point), 7.5F, IM_COL32(20, 22, 25, 230), 0, 2.0F);
     }
@@ -1785,8 +1784,8 @@ void App::draw_seam_editor() {
         int result = -1;
         float distance_squared = 13.0F * 13.0F;
         const ImVec2 mouse = ImGui::GetIO().MousePos;
-        for (std::size_t index = 0; index < seam_editor_value_.points.size(); ++index) {
-            const ImVec2 position = point_position(seam_editor_value_.points[index]);
+        for (std::size_t index = 0; index < seam.points.size(); ++index) {
+            const ImVec2 position = point_position(seam.points[index]);
             const float dx = mouse.x - position.x;
             const float dy = mouse.y - position.y;
             const float candidate = dx * dx + dy * dy;
@@ -1800,9 +1799,9 @@ void App::draw_seam_editor() {
     const bool hovered = ImGui::IsItemHovered();
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         const int nearest = nearest_point();
-        if (nearest > 0 && nearest + 1 < static_cast<int>(seam_editor_value_.points.size())) {
-            seam_editor_value_.points.erase(seam_editor_value_.points.begin() + nearest);
-            seam_editor_dirty_ = true;
+        if (nearest > 0 && nearest + 1 < static_cast<int>(seam.points.size())) {
+            seam.points.erase(seam.points.begin() + nearest);
+            update_dirty();
             refresh_seam_editor_preview();
         }
     }
@@ -1812,22 +1811,22 @@ void App::draw_seam_editor() {
             auto point = normalized_mouse();
             point.along = std::clamp(point.along, 0.001, 0.999);
             const auto insertion = std::lower_bound(
-                seam_editor_value_.points.begin(), seam_editor_value_.points.end(), point.along,
+                seam.points.begin(), seam.points.end(), point.along,
                 [](const auto& candidate, double along) { return candidate.along < along; });
             const auto too_close = [&](const auto& candidate) {
                 return std::abs(candidate.along - point.along) < 0.0005;
             };
-            if ((insertion != seam_editor_value_.points.end() && too_close(*insertion)) ||
-                (insertion != seam_editor_value_.points.begin() && too_close(*(insertion - 1)))) {
+            if ((insertion != seam.points.end() && too_close(*insertion)) ||
+                (insertion != seam.points.begin() && too_close(*(insertion - 1)))) {
                 seam_editor_active_point_ = static_cast<int>(
-                    insertion != seam_editor_value_.points.end() && too_close(*insertion)
-                        ? std::distance(seam_editor_value_.points.begin(), insertion)
-                        : std::distance(seam_editor_value_.points.begin(), insertion - 1));
+                    insertion != seam.points.end() && too_close(*insertion)
+                        ? std::distance(seam.points.begin(), insertion)
+                        : std::distance(seam.points.begin(), insertion - 1));
             } else {
                 seam_editor_active_point_ = static_cast<int>(
-                    std::distance(seam_editor_value_.points.begin(), insertion));
-                seam_editor_value_.points.insert(insertion, point);
-                seam_editor_dirty_ = true;
+                    std::distance(seam.points.begin(), insertion));
+                seam.points.insert(insertion, point);
+                update_dirty();
                 refresh_seam_editor_preview();
             }
         }
@@ -1836,33 +1835,33 @@ void App::draw_seam_editor() {
         auto point = normalized_mouse();
         const int index = seam_editor_active_point_;
         if (index == 0) point.along = 0.0;
-        else if (index + 1 == static_cast<int>(seam_editor_value_.points.size())) point.along = 1.0;
+        else if (index + 1 == static_cast<int>(seam.points.size())) point.along = 1.0;
         else {
             const double lower =
-                seam_editor_value_.points[static_cast<std::size_t>(index - 1)].along + 0.0005;
+                seam.points[static_cast<std::size_t>(index - 1)].along + 0.0005;
             const double upper =
-                seam_editor_value_.points[static_cast<std::size_t>(index + 1)].along - 0.0005;
+                seam.points[static_cast<std::size_t>(index + 1)].along - 0.0005;
             point.along = lower <= upper
                 ? std::clamp(point.along, lower, upper)
-                : seam_editor_value_.points[static_cast<std::size_t>(index)].along;
+                : seam.points[static_cast<std::size_t>(index)].along;
         }
-        const auto previous = seam_editor_value_.points[static_cast<std::size_t>(index)];
+        const auto previous = seam.points[static_cast<std::size_t>(index)];
         if (previous.along != point.along || previous.across != point.across) {
-            seam_editor_value_.points[static_cast<std::size_t>(index)] = point;
-            seam_editor_dirty_ = true;
+            seam.points[static_cast<std::size_t>(index)] = point;
+            update_dirty();
             refresh_seam_editor_preview();
         }
     }
     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) seam_editor_active_point_ = -1;
 
     ImGui::Spacing();
+    ImGui::BeginDisabled(!seam_editor_dirty_);
     if (ImGui::Button("Save Seam")) {
         auto request = make_request(chunkmap::CommandType::SeamSet);
-        request.payload = chunkmap::SeamSetPayload{seam_editor_value_};
+        request.payload = chunkmap::SeamSetPayload{seam};
         auto saved = command_host_.submit_and_wait(std::move(request));
         if (saved) {
-            project_->layout.seams[key] = seam_editor_value_;
-            show_seam_editor_ = false;
+            project_->layout.seams[key] = seam;
             seam_editor_dirty_ = false;
             status_message_ = "Seam parameters saved";
             error_message_.clear();
@@ -1870,15 +1869,18 @@ void App::draw_seam_editor() {
             error_message_ = saved.error().message;
         }
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
+    const bool has_saved_override = project_->layout.seams.find(key) !=
+                                    project_->layout.seams.end();
+    ImGui::BeginDisabled(!seam_editor_dirty_ && !has_saved_override);
     if (ImGui::Button("Use Auto Default")) {
         auto request = make_request(chunkmap::CommandType::SeamReset);
         request.payload = chunkmap::SeamResetPayload{key};
         auto reset = command_host_.submit_and_wait(std::move(request));
         if (reset) {
             project_->layout.seams.erase(key);
-            seam_editor_value_ = chunkmap::LayoutRenderer::default_seam(
-                project_->config, key);
+            seam = chunkmap::LayoutRenderer::default_seam(project_->config, key);
             seam_editor_dirty_ = false;
             refresh_seam_editor_preview();
             status_message_ = "Using automatic seam default";
@@ -1887,19 +1889,13 @@ void App::draw_seam_editor() {
             error_message_ = reset.error().message;
         }
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Cancel")) {
-        show_seam_editor_ = false;
-        seam_editor_dirty_ = false;
-        rebuild_seam_textures(key.first, project_->layout.placement(key.first));
+        close_seam_inspector();
     }
     ImGui::SameLine();
     ImGui::TextDisabled("Chunk PNG files are never modified.");
-    ImGui::End();
-    if (!open) {
-        show_seam_editor_ = false;
-        rebuild_seam_textures(key.first, project_->layout.placement(key.first));
-    }
 }
 
 chunkmap::CommandRequest App::make_request(chunkmap::CommandType type) const {
@@ -2127,9 +2123,6 @@ void App::poll_commands() {
             reset_alignment_preview();
         }
         if (!result.changes.changed_chunks.empty()) {
-            seam_analysis_.reset();
-            seam_overlap_texture_.reset();
-            seam_difference_texture_.reset();
             rebuild_seam_textures();
         }
         if (selected_ && std::find(result.changes.changed_prompts.begin(),

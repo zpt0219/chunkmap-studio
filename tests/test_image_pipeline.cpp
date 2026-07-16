@@ -127,9 +127,6 @@ TEST_CASE("seam analyzer reports RGB mean absolute error") {
     REQUIRE(result.ok());
     CHECK(result.value().overlap_pixels == 2);
     CHECK(result.value().mean_absolute_rgb_difference == doctest::Approx(30.0));
-    CHECK(result.value().overlap_preview.width() == 2);
-    CHECK(result.value().overlap_preview.height() == 10);
-    CHECK(result.value().difference_preview.pixel(0, 0)[0] == 30);
 }
 
 TEST_CASE("map geometry gives visual topmost chunks ownership of overlaps") {
@@ -142,6 +139,21 @@ TEST_CASE("map geometry gives visual topmost chunks ownership of overlaps") {
     CHECK(chunkmap::topmost_chunk_at(settings, 8.0, 5.0) == chunkmap::ChunkCoord{1, 0});
     CHECK(chunkmap::topmost_chunk_at(settings, 8.0, 8.0) == chunkmap::ChunkCoord{1, 1});
     CHECK_FALSE(chunkmap::topmost_chunk_at(settings, 26.0, 5.0).has_value());
+}
+
+TEST_CASE("map geometry identifies the nearest canonical seam") {
+    auto settings = config();
+    CHECK(chunkmap::seam_at(settings, 8.0, 4.0) ==
+          chunkmap::SeamKey{{0, 0}, chunkmap::SeamDirection::Right});
+    CHECK(chunkmap::seam_at(settings, 9.99, 4.0) ==
+          chunkmap::SeamKey{{0, 0}, chunkmap::SeamDirection::Right});
+    CHECK(chunkmap::seam_at(settings, 4.0, 9.99) ==
+          chunkmap::SeamKey{{0, 0}, chunkmap::SeamDirection::Bottom});
+    CHECK(chunkmap::seam_at(settings, 8.2, 8.2) ==
+          chunkmap::SeamKey{{0, 1}, chunkmap::SeamDirection::Right});
+    CHECK_FALSE(chunkmap::seam_at(settings, 7.99, 4.0).has_value());
+    CHECK_FALSE(chunkmap::seam_at(settings, 10.0, 4.0).has_value());
+    CHECK_FALSE(chunkmap::seam_at(settings, -0.1, 8.0).has_value());
 }
 
 TEST_CASE("map geometry rejects integer overflow") {
