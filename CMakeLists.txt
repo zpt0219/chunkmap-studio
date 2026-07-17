@@ -30,6 +30,15 @@ if(DEFINED FETCHCONTENT_BASE_DIR AND
 endif()
 include(FetchContent)
 
+# Automatically use local third-party folders if they exist (enables offline build)
+foreach(dep glfw imgui tinyfd nlohmann_json stb doctest)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/${dep}")
+        string(TOUPPER "${dep}" dep_upper)
+        set(FETCHCONTENT_SOURCE_DIR_${dep_upper} "${CMAKE_SOURCE_DIR}/third_party/${dep}" CACHE PATH "Path to local ${dep}" FORCE)
+    endif()
+endforeach()
+
+
 option(CHUNKMAP_BUILD_DESKTOP "Build the Dear ImGui desktop application" ON)
 option(CHUNKMAP_BUILD_TESTS "Build tests" ON)
 option(CHUNKMAP_ENABLE_SANITIZERS "Enable ASan and UBSan in Debug builds" ON)
