@@ -1,6 +1,7 @@
 #include "../desktop/src/concept_comparison_state.h"
 
 #include <doctest/doctest.h>
+#include <initializer_list>
 
 using chunkmap_desktop::ConceptComparisonMode;
 using chunkmap_desktop::ConceptComparisonState;

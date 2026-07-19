@@ -344,13 +344,125 @@ void App::draw_map() {
     ImGui::Begin("Map", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     if (!project_) {
         const ImVec2 available = ImGui::GetContentRegionAvail();
+        const ImVec2 text_size = ImGui::CalcTextSize("Open a map project to begin review.");
+        const float button_width = 140.0F;
+        const float button_height = 34.0F;
+        const float spacing = 12.0F;
+
+        // Gather recent projects dynamically by scanning output/ folder
+        struct RecentProject {
+            std::string name;
+            std::filesystem::file_time_type last_modified;
+        };
+        std::vector<RecentProject> recent_projects;
+        std::error_code ec;
+        auto output_dir = workspace_ / "output";
+        if (std::filesystem::exists(output_dir, ec) && std::filesystem::is_directory(output_dir, ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator(output_dir, ec)) {
+                if (entry.is_directory()) {
+                    auto project_json = entry.path() / "project.json";
+                    if (std::filesystem::exists(project_json)) {
+                        auto write_time = std::filesystem::last_write_time(project_json, ec);
+                        if (!ec) {
+                            recent_projects.push_back({entry.path().filename().string(), write_time});
+                        }
+                    }
+                }
+            }
+            std::sort(recent_projects.begin(), recent_projects.end(), [](const RecentProject& a, const RecentProject& b) {
+                return a.last_modified > b.last_modified;
+            });
+        }
+
+        const float welcome_height = text_size.y + spacing + button_height + spacing + button_height;
+        float list_height = 0.0F;
+        float recent_section_height = 0.0F;
+        if (!recent_projects.empty()) {
+            list_height = std::min(180.0F, static_cast<float>(recent_projects.size()) * 54.0F);
+            recent_section_height = 24.0F + 20.0F + spacing + list_height;
+        }
+
+        const float total_height = welcome_height + recent_section_height;
+        const float start_y = std::max(18.0F, (available.y - total_height) * 0.42F);
+
+        // Center the text label
         ImGui::SetCursorPos(ImVec2(
-            std::max(18.0F, (available.x - 280.0F) * 0.5F),
-            std::max(18.0F, (available.y - 90.0F) * 0.42F)));
+            std::max(18.0F, (available.x - text_size.x) * 0.5F),
+            start_y));
         ImGui::TextUnformatted("Open a map project to begin review.");
-        if (ImGui::Button("Open Project", ImVec2(132.0F, 34.0F))) open_project_dialog();
-        ImGui::SameLine();
-        if (ImGui::Button("New Project", ImVec2(132.0F, 34.0F))) new_project_dialog();
+
+        // Center the Open Project button below the text label
+        ImGui::SetCursorPos(ImVec2(
+            std::max(18.0F, (available.x - button_width) * 0.5F),
+            start_y + text_size.y + spacing));
+        if (ImGui::Button("Open Project", ImVec2(button_width, button_height))) {
+            open_project_dialog();
+        }
+
+        // Center the New Project button below the Open Project button
+        ImGui::SetCursorPos(ImVec2(
+            std::max(18.0F, (available.x - button_width) * 0.5F),
+            start_y + text_size.y + spacing + button_height + spacing));
+        if (ImGui::Button("New Project", ImVec2(button_width, button_height))) {
+            new_project_dialog();
+        }
+
+        // Render Recent Projects list if found
+        if (!recent_projects.empty()) {
+            const float recent_y = start_y + welcome_height + 24.0F;
+            const float section_width = 320.0F;
+            const float section_height = 20.0F + spacing + list_height;
+
+            ImGui::SetCursorPos(ImVec2(
+                std::max(18.0F, (available.x - section_width) * 0.5F),
+                recent_y));
+
+            if (ImGui::BeginChild("##recent_projects_section", ImVec2(section_width, section_height), ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar)) {
+                ImGui::SeparatorText("Recent Projects");
+
+                ImGui::SetCursorPos(ImVec2(0.0F, 20.0F + spacing));
+
+                if (ImGui::BeginChild("##recent_projects_list", ImVec2(section_width, list_height), ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground)) {
+                    for (const auto& proj : recent_projects) {
+                        ImGui::PushID(proj.name.c_str());
+
+                        const ImVec2 card_size = ImVec2(ImGui::GetContentRegionAvail().x, 48.0F);
+                        const ImVec2 start_pos = ImGui::GetCursorPos();
+                        const ImVec2 screen_pos = ImGui::GetCursorScreenPos();
+
+                        bool clicked = ImGui::Selectable("##card", false, ImGuiSelectableFlags_AllowOverlap, card_size);
+
+                        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                        ImU32 border_color = ImGui::GetColorU32(ImGui::IsItemHovered() ? ImGuiCol_HeaderActive : ImGuiCol_Border);
+                        ImU32 bg_color = ImGui::GetColorU32(ImGui::IsItemHovered() ? ImGuiCol_HeaderHovered : ImGuiCol_FrameBg);
+                        draw_list->AddRectFilled(screen_pos, ImVec2(screen_pos.x + card_size.x, screen_pos.y + card_size.y), bg_color, 4.0F);
+                        draw_list->AddRect(screen_pos, ImVec2(screen_pos.x + card_size.x, screen_pos.y + card_size.y), border_color, 4.0F);
+
+                        // Render Project Name
+                        ImGui::SetCursorPos(ImVec2(start_pos.x + 8.0F, start_pos.y + 4.0F));
+                        ImGui::Text("%s", proj.name.c_str());
+
+                        // Render Project Path
+                        ImGui::SetCursorPos(ImVec2(start_pos.x + 8.0F, start_pos.y + 24.0F));
+                        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                        std::string path_str = (workspace_ / "output" / proj.name).string();
+                        ImGui::TextUnformatted(path_str.c_str());
+                        ImGui::PopStyleColor();
+
+                        ImGui::SetCursorPos(ImVec2(start_pos.x, start_pos.y + card_size.y + 6.0F));
+                        ImGui::Dummy(ImVec2(0.0F, 0.0F));
+                        ImGui::PopID();
+
+                        if (clicked) {
+                            open_project(workspace_, proj.name);
+                        }
+                    }
+                    ImGui::EndChild();
+                }
+                ImGui::EndChild();
+            }
+        }
+
         ImGui::End();
         return;
     }

@@ -13,7 +13,27 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(nlohmann_json stb)
 find_package(Threads REQUIRED)
-find_package(ZLIB REQUIRED)
+find_package(ZLIB)
+if(NOT ZLIB_FOUND)
+    message(STATUS "ZLIB not found on system. Fetching from GitHub via FetchContent...")
+    set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        zlib
+        GIT_REPOSITORY https://github.com/madler/zlib.git
+        GIT_TAG v1.3.1
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(zlib)
+    if(NOT TARGET ZLIB::ZLIB)
+        if(TARGET zlibstatic)
+            add_library(ZLIB::ZLIB ALIAS zlibstatic)
+        elseif(TARGET zlib)
+            add_library(ZLIB::ZLIB ALIAS zlib)
+        else()
+            message(FATAL_ERROR "ZLIB target could not be found or built.")
+        endif()
+    endif()
+endif()
 
 file(READ "${CMAKE_SOURCE_DIR}/docs/PROMPT_AUTHORING_GUIDE.md"
     CHUNKMAP_PROMPT_AUTHORING_GUIDE)

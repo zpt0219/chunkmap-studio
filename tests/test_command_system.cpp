@@ -541,8 +541,10 @@ TEST_CASE("derived reads reject uncached external image changes until reload") {
 
     auto replacement = chunkmap::atomic_file::read_binary(fixture);
     REQUIRE(replacement.ok());
-    REQUIRE(chunkmap::atomic_file::write_binary(
-        workspace / "output/world/chunks/1_1.png", replacement.value()).ok());
+    const auto chunk_path = workspace / "output/world/chunks/1_1.png";
+    REQUIRE(chunkmap::atomic_file::write_binary(chunk_path, replacement.value()).ok());
+    // Force a timestamp difference to prevent Windows filesystem last_write_time resolution flakiness
+    std::filesystem::last_write_time(chunk_path, std::filesystem::last_write_time(chunk_path) + std::chrono::seconds(10));
     auto context = request(chunkmap::CommandType::ChunkContext, workspace, "external-4", "world");
     context.payload = chunkmap::CoordPayload{{0, 1}};
     auto rejected = queue.submit(context).get();
